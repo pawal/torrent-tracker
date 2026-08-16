@@ -324,6 +324,23 @@ main {
   background: none;
   border: 1px solid var(--border);
 }
+/* Parked and rolling are notes about the record, not the resolver, so they
+   stay muted rather than joining the status colour scale. */
+.pill.parked {
+  color: var(--ink-2);
+  background: none;
+  border: 1px dashed var(--border);
+  margin-left: 4px;
+}
+.rolling {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  color: var(--ink-2);
+  font-size: var(--text-xs);
+}
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .pill.ok {

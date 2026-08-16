@@ -7,6 +7,8 @@
   let error = $state(null)
   let loading = $state(true)
 
+  const rollTitle = 'addresses change every run; the prefix is what is tracked'
+
   $effect(() => {
     let cancelled = false
     loading = true
@@ -57,6 +59,9 @@
     <div class="detail-head">
       <h2 class="name">{data.name}</h2>
       <span class="pill {data.last_status || 'unchecked'}">{data.last_status || 'unchecked'}</span>
+      {#if data.parked}
+        <span class="pill parked" title="resolves only to parking addresses">parked</span>
+      {/if}
     </div>
     <p class="meta">
       source {data.source || 'unknown'}
@@ -111,7 +116,10 @@
             {#each data.records as r (r.id)}
               {@const n = data.info?.[r.ip]}
               <tr>
-                <td class="mono nowrap">{r.ip}</td>
+                <td class="mono nowrap">
+                  {r.ip}
+                  {#if r.is_prefix}<span class="rolling" title={rollTitle}>rolling</span>{/if}
+                </td>
                 <td class="net-tag">
                   {#if n && (n.asn || n.org || n.as_name)}
                     <span class="asn">{describeNetwork(n)}</span>

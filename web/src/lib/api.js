@@ -57,6 +57,16 @@ export function describe(c) {
       return { sign: '~', cls: 'net', text: c.detail }
     case 'tracker_added':
       return { sign: '*', cls: 'new', text: `added${c.detail ? ` (${c.detail})` : ''}` }
+    case 'prefix_added':
+      return { sign: '+', cls: 'add', text: `${c.ip} (prefix)` }
+    case 'prefix_removed':
+      return { sign: '-', cls: 'del', text: `${c.ip} (prefix)` }
+    case 'ips_rolling':
+      return { sign: '~', cls: 'net', text: `IPv${c.family} rolls: ${c.detail}` }
+    case 'ips_stable':
+      return { sign: '~', cls: 'net', text: `IPv${c.family} ${c.detail}` }
+    case 'parked':
+      return { sign: '!', cls: 'status', text: c.detail || 'parked' }
     default:
       return { sign: '?', cls: '', text: `${c.type} ${c.detail ?? ''}` }
   }

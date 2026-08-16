@@ -15,6 +15,10 @@
     return () => (cancelled = true)
   })
 
+  // A rolling family shows its prefix rather than the addresses inside it.
+  const rolls = (t, family) => (t.rolling ?? []).includes(family)
+  const rollTitle = 'addresses change every run; the prefix is what is tracked'
+
   const shown = $derived.by(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return trackers
@@ -66,6 +70,9 @@
                 <span class="pill {t.last_status || 'unchecked'}">
                   {t.last_status || 'unchecked'}
                 </span>
+                {#if t.parked}
+                  <span class="pill parked" title="resolves only to parking addresses">parked</span>
+                {/if}
               </td>
               <td class="net-tag">
                 <!-- Keyed on the whole tuple: one AS can appear twice with a
@@ -80,9 +87,11 @@
               </td>
               <td class="addr">
                 {#each t.ipv4 as ip (ip)}<span>{ip}</span>{:else}-{/each}
+                {#if rolls(t, 4)}<span class="rolling" title={rollTitle}>rolling</span>{/if}
               </td>
               <td class="addr">
                 {#each t.ipv6 as ip (ip)}<span>{ip}</span>{:else}-{/each}
+                {#if rolls(t, 6)}<span class="rolling" title={rollTitle}>rolling</span>{/if}
               </td>
               <td class="muted mono nowrap">
                 {t.last_checked_at ? fmtTime(t.last_checked_at) : 'never'}

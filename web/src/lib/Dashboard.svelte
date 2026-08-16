@@ -46,6 +46,11 @@
     <div class="stat">
       <span class="n">{stats.changes}</span><span class="k">changes recorded</span>
     </div>
+    {#if stats.parked}
+      <div class="stat">
+        <span class="n">{stats.parked}</span><span class="k">parked, not trackers</span>
+      </div>
+    {/if}
   </div>
 
   {#if statusEntries.length}

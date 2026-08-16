@@ -270,6 +270,26 @@ func (s *Store) PrefixMap(ctx context.Context) (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// KnownPrefixes returns every distinct prefix enrichment has recorded.
+func (s *Store) KnownPrefixes(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT prefix FROM ip_info WHERE prefix != '' ORDER BY prefix`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // prefixed qualifies a bare column list with a table alias.
 func prefixed(columns, alias string) string {
 	parts := strings.Split(columns, ",")

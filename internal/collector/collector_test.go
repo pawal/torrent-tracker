@@ -651,3 +651,81 @@ func TestRunOnceCollapsesRollingFamilyToPrefix(t *testing.T) {
 		t.Errorf("churn inside the prefix added %d change entries, want 0", len(changes)-before)
 	}
 }
+
+// The case the whole feature exists for: a CDN hands out addresses that have
+// never been seen before, so none of them is in ip_info when the pass runs.
+// Only the addresses from earlier runs have been enriched, which is all the
+// enrichment pass can ever know. Collapsing therefore cannot depend on looking
+// the address up; it depends on the address falling inside a prefix already
+// known from a sibling.
+func TestRollingCollapsesWithoutEnrichingEveryAddress(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := t.Context()
+	c.RollAfter = 3
+
+	tr := addTracker(t, st, "cdn.example")
+	fake.set(tr.Name, resolver.TypeA, ok("65.9.46.42"))
+
+	err := st.PutIPInfo(ctx, store.IPInfo{
+		IP: "2600:9000:2094:0::1", Family: 6, ASN: 16509, Prefix: "2600:9000:2094::/48",
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, ip := range []string{
+		"2600:9000:2094:1400::1", "2600:9000:2094:3c00::1",
+		"2600:9000:2094:5c00::1", "2600:9000:2094:7600::1",
+	} {
+		fake.set(tr.Name, resolver.TypeAAAA, ok(ip))
+		if _, err := c.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	records, err := st.ActiveRecords(ctx, tr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range records {
+		if r.Family == 6 {
+			if !r.IsPrefix || r.IP != "2600:9000:2094::/48" {
+				t.Errorf("active IPv6 record = %+v, want the /48 it sits inside", r)
+			}
+			return
+		}
+	}
+	t.Errorf("no active IPv6 record at all: %+v", records)
+}
+
+// An address outside every known prefix must not be forced into one.
+func TestRollingIgnoresUnrelatedPrefixes(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := t.Context()
+	c.RollAfter = 2
+
+	tr := addTracker(t, st, "elsewhere.example")
+	err := st.PutIPInfo(ctx, store.IPInfo{
+		IP: "2600:9000:2094:0::1", Family: 6, ASN: 16509, Prefix: "2600:9000:2094::/48",
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, ip := range []string{"2001:db8:1::1", "2001:db8:2::1", "2001:db8:3::1"} {
+		fake.set(tr.Name, resolver.TypeAAAA, ok(ip))
+		if _, err := c.RunOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	records, err := st.ActiveRecords(ctx, tr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range records {
+		if r.IsPrefix {
+			t.Errorf("collapsed onto an unrelated prefix: %+v", r)
+		}
+	}
+}

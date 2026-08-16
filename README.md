@@ -68,12 +68,17 @@ p4p.arenabg.com
   IPv6  2600:9000:2094::/48  rolling   ~8 addresses per run
 ```
 
-The prefix comes from enrichment, so a family cannot roll until its addresses
-have an AS behind them. Nothing is reported while the addresses churn inside
-the prefix; a move to a different prefix is a `prefix_added` and a
-`prefix_removed`. If the addresses settle for three runs the family goes back
-to being tracked address by address. `--roll-after=-1` turns the whole thing
-off and keeps every address.
+The prefix comes from enrichment, but not by looking the address up: a rolling
+host answers with addresses nothing has ever seen, so they are never in
+`ip_info` when the pass runs. What is known is the prefix a *sibling* address
+was found in, so an address is matched by containment against the prefixes
+enrichment has already recorded. One enriched address in the /48 is enough to
+place every later one. An address inside no known prefix is left as an address.
+
+Nothing is reported while the addresses churn inside the prefix; a move to a
+different prefix is a `prefix_added` and a `prefix_removed`. If the addresses
+settle for three runs the family goes back to being tracked address by address.
+`--roll-after=-1` turns the whole thing off and keeps every address.
 
 **Names that are no longer trackers.** Expired tracker domains get bought and
 pointed at a parking host, where they carry on answering and so carry on

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -93,7 +95,7 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 		return Summary{}, err
 	}
 
-	prefixes, err := c.Store.PrefixMap(ctx)
+	prefixes, err := c.prefixIndex(ctx)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -156,7 +158,7 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 
 // collectOne resolves and persists a single tracker.
 func (c *Collector) collectOne(ctx context.Context, t store.Tracker,
-	prefixes map[string]string, parking map[string]bool,
+	prefixes *prefixIndex, parking map[string]bool,
 ) (store.Plan, error) {
 	prev, err := c.Store.ActiveRecords(ctx, t.ID)
 	if err != nil {
@@ -173,7 +175,7 @@ func (c *Collector) collectOne(ctx context.Context, t store.Tracker,
 		MissThreshold: c.MissThreshold,
 		RollAfter:     c.rollAfter(),
 		SteadyAfter:   c.SteadyAfter,
-		PrefixFor:     func(ip string) string { return prefixes[ip] },
+		PrefixFor:     prefixes.lookup,
 	})
 	plan.Duration = time.Duration(obs.Duration()) * time.Millisecond
 
@@ -187,6 +189,58 @@ func (c *Collector) collectOne(ctx context.Context, t store.Tracker,
 		c.log().Info("tracker changed", "tracker", t.Name, "status", plan.Status, "changes", plan.Changes())
 	}
 	return plan, nil
+}
+
+// prefixIndex resolves an address to the prefix it sits in. A rolling host
+// answers with addresses nothing has ever seen, so an exact lookup alone would
+// never find one; containment against the prefixes enrichment already knows
+// does, from the first sibling address onwards.
+type prefixIndex struct {
+	exact map[string]string
+	// known is sorted most specific first, so an address inside nested
+	// prefixes resolves to the tightest one.
+	known []netip.Prefix
+}
+
+func (c *Collector) prefixIndex(ctx context.Context) (*prefixIndex, error) {
+	exact, err := c.Store.PrefixMap(ctx)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := c.Store.KnownPrefixes(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	idx := &prefixIndex{exact: exact}
+	for _, p := range raw {
+		if parsed, err := netip.ParsePrefix(p); err == nil {
+			idx.known = append(idx.known, parsed)
+		}
+	}
+	sort.Slice(idx.known, func(i, j int) bool {
+		return idx.known[i].Bits() > idx.known[j].Bits()
+	})
+	return idx, nil
+}
+
+func (p *prefixIndex) lookup(ip string) string {
+	if p == nil {
+		return ""
+	}
+	if prefix, ok := p.exact[ip]; ok {
+		return prefix
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ""
+	}
+	for _, prefix := range p.known {
+		if prefix.Contains(addr) {
+			return prefix.String()
+		}
+	}
+	return ""
 }
 
 func (c *Collector) resolve(ctx context.Context, name string) Observation {

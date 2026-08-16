@@ -1,0 +1,50 @@
+[Unit]
+Description=torrent-tracker - track BitTorrent tracker addresses over time
+Documentation=https://github.com/pawal/torrent-tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=tracker
+Group=tracker
+
+# systemd creates /var/lib/trackerd on first start and chowns it to tracker.
+StateDirectory=trackerd
+WorkingDirectory=/var/lib/trackerd
+Environment=TRACKERD_DB=/var/lib/trackerd/trackers.db
+
+# Bound to loopback for a reverse proxy. Use --addr :8080 to listen publicly.
+ExecStart=/usr/local/bin/trackerd serve --addr 127.0.0.1:8080
+
+Restart=on-failure
+RestartSec=5s
+# SIGTERM drains in-flight requests for up to 10s before the process exits.
+TimeoutStopSec=30s
+
+# The daemon needs outbound DNS and HTTPS, its state directory, nothing else.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

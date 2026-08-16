@@ -154,6 +154,57 @@ server needs no authentication.
 | `GET /api/runs` | recent collection runs |
 | `GET /healthz` | liveness |
 
+## Running as a service
+
+`deploy/trackerd.service` is a systemd unit for Debian 13. It runs the daemon
+as an unprivileged `tracker` user with its database in `/var/lib/trackerd`,
+which systemd creates on first start. The UI is embedded in the binary, so a
+deployment is one file plus the unit — there is nothing else to copy.
+
+```sh
+make build
+sudo install -m 0755 trackerd /usr/local/bin/trackerd
+
+sudo adduser --system --group --home /var/lib/trackerd --no-create-home tracker
+sudo install -m 0644 deploy/trackerd.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now trackerd
+
+systemctl status trackerd
+journalctl -u trackerd -f
+```
+
+Seed the tracker list once the service is up. SQLite runs in WAL mode with a
+10 s busy timeout, so the CLI and the running daemon can share the database:
+
+```sh
+sudo -u tracker trackerd --db /var/lib/trackerd/trackers.db import --file list.txt
+sudo -u tracker trackerd --db /var/lib/trackerd/trackers.db import --url ngosang
+```
+
+`TRACKERD_DB` is set in the unit but not in your shell, so ad-hoc commands need
+`--db` — or `sudo -u tracker env TRACKERD_DB=/var/lib/trackerd/trackers.db
+trackerd ...` — or they will quietly create a second database in the current
+directory.
+
+The unit listens on `127.0.0.1:8080` and expects a reverse proxy in front:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+}
+```
+
+Change `--addr` in the unit to `:8080` to listen on every interface instead.
+The unit runs with `ProtectSystem=strict`, an empty capability set and a
+`@system-service` syscall filter; the daemon only needs outbound DNS and HTTPS
+(for RDAP) and its own state directory. Add `AmbientCapabilities=CAP_NET_BIND_SERVICE`
+if you point `--addr` at a port below 1024.
+
+Nothing served over HTTP mutates state — the API is read-only and the write
+paths live in the CLI — so a public deployment needs no authentication.
+
 ## Development
 
 ```sh
@@ -180,6 +231,7 @@ internal/api/          HTTP handlers
 internal/trackerlist/  announce-URL parsing and list fetching
 internal/cli/          subcommands
 web/                   Svelte 5 + Vite frontend, embedded via go:embed
+deploy/                systemd unit
 legacy/                the original Perl implementation
 ```
 

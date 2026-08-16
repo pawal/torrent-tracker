@@ -26,35 +26,36 @@ make build                      # builds the UI, embeds it, builds ./trackerd
 
 ## How the history model works
 
-The naive approach — snapshot the addresses each run and diff consecutive
-snapshots — produces a lot of noise and no queryable history. Instead:
+The obvious approach is to snapshot the addresses on each run and diff
+consecutive snapshots. That produces a lot of noise and no history you can
+query. So instead:
 
 - **`ip_records`** holds one row per contiguous period an address was seen
   (`first_seen`, `last_seen`, `active`). An address that goes away and later
-  returns gets a *second* row, so the gap is visible.
+  comes back gets a *second* row, so the gap stays visible.
 - **`changes`** is an append-only feed of `ip_added` / `ip_removed` /
   `status_changed` / `tracker_added`. This is what the dashboard renders.
-- **`lookups`** and **`runs`** keep the audit trail, so a resolver outage is
-  distinguishable from trackers genuinely disappearing.
+- **`lookups`** and **`runs`** keep the audit trail, so you can tell a resolver
+  outage apart from trackers that really did disappear.
 
 Two rules keep the history honest:
 
 **A failed query never retires an address.** Results are tracked per address
 family. If the AAAA query SERVFAILs while A succeeds, the stored IPv6 records
-are left untouched rather than being recorded as removed. NXDOMAIN and NOERROR
-*are* authoritative, so those do retire addresses. Without this, one flaky
-resolver moment would look like every tracker dying at once.
+are left alone instead of being recorded as removed. NXDOMAIN and NOERROR *are*
+authoritative, so those do retire addresses. Without this, one flaky moment from
+a resolver would look like every tracker dying at once.
 
 **Addresses must be missing repeatedly before they are retired.**
-`--miss-threshold` (default 2) is how many consecutive absences it takes. Many
+`--miss-threshold` (default 2) sets how many consecutive absences it takes. Many
 trackers sit behind rotating or round-robin DNS and return a different subset
-each query; a threshold above 1 keeps that churn out of the change feed.
+each query, so a threshold above 1 keeps that churn out of the change feed.
 
 ## Address enrichment
 
 Every observed address is annotated with its origin AS, the RIR that allocated
-the prefix, and its location, so a change of address can be read as a change of
-network. Three sources, each independently switchable:
+the prefix, and its location, so you can see when a new address also means a new
+network. There are three sources, and each can be switched on or off on its own:
 
 | Source | Gives | Cost |
 | --- | --- | --- |
@@ -62,24 +63,23 @@ network. Three sources, each independently switchable:
 | **RDAP** (`--rdap`, default on) | authoritative network name, holder organisation, country | one HTTPS request per address, throttled to `--rdap-interval` (1 s) |
 | **MaxMind** (`--geoip-db PATH`, off) | city and coordinates | local `.mmdb`, needs a free GeoLite2 account |
 
-Cymru alone covers the common case and is fast — 448 addresses in ~34 s. RDAP is
-authoritative but rate-limited, so it is the slow part; turn it off with
+Cymru alone covers the common case and is fast: 448 addresses in about 34 s.
+RDAP is authoritative but rate-limited, so it is the slow part. Turn it off with
 `--rdap=false` if you only want AS and country.
 
-RDAP resolves the right registry through IANA's bootstrap tables
-(`data.iana.org/rdap/`), fetched once and cached, rather than a third-party
-redirector.
+RDAP finds the right registry from IANA's bootstrap tables
+(`data.iana.org/rdap/`), fetched once and cached, instead of going through a
+third-party redirector.
 
 Enrichment runs after each collection pass under `serve`, capped at
-`--enrich-batch` addresses (250) per pass, and refreshes data older than
+`--enrich-batch` addresses (250) per pass, and refreshes anything older than
 `--enrich-max-age` (30 days). Prefixes change hands slowly and the registries
 are rate-limited, so there is nothing to gain from checking more often.
 
-If an address changes origin AS between refreshes, that is recorded in the
-change feed as `asn_changed` against every tracker pointing at it — a host
-quietly moving from one provider to another is exactly the kind of thing worth
-noticing. A lookup that merely fails to determine the AS is not treated as a
-move.
+If an address changes origin AS between refreshes, that goes into the change
+feed as `asn_changed` against every tracker pointing at it. A host quietly
+moving from one provider to another is worth knowing about. A lookup that simply
+fails to determine the AS is not treated as a move.
 
 `trackerd networks` summarises where the tracked hosts actually live:
 
@@ -108,13 +108,13 @@ trackerd [--db PATH] [-v] <command>
   sources    list the built-in public tracker lists
 ```
 
-`add` and `import` accept full announce URLs and extract the hostname, so you
-can paste `udp://tracker.example.com:1337/announce` directly. IP literals and
-`.i2p` / `.onion` / `.ygg` addresses are skipped — they have no DNS history to
-track.
+`add` and `import` accept full announce URLs and pull out the hostname, so you
+can paste `udp://tracker.example.com:1337/announce` straight in. IP literals and
+`.i2p` / `.onion` / `.ygg` addresses are skipped, since they have no DNS history
+to track.
 
-`rm` disables a tracker but keeps its history; re-adding the name revives it.
-`--purge` deletes it and its history outright.
+`rm` disables a tracker but keeps its history, and re-adding the name brings it
+back. `--purge` deletes it and its history outright.
 
 The database path also comes from `$TRACKERD_DB`.
 
@@ -126,11 +126,11 @@ to `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`,
 ## Tracker lists
 
 `list.txt` is the seed list: 326 announce URLs covering 300 unique hostnames,
-merged from the original 2012 list plus three maintained public sources. Names
-that resolved NXDOMAIN — 64 of them, mostly casualties of the original 2012
-list — have been dropped. Names that merely fail to answer (SERVFAIL, timeout)
-are kept: a broken delegation is not the same as a name that no longer exists,
-and that distinction is worth recording. Import any source directly:
+merged from the original 2012 list plus three maintained public sources. The 64
+names that resolved NXDOMAIN have been dropped, most of them casualties of the
+original 2012 list. Names that merely fail to answer (SERVFAIL, timeout) are
+kept, because a broken delegation is not the same as a name that no longer
+exists, and that difference is worth recording. Import any source directly:
 
 ```sh
 ./trackerd import --url ngosang      # github.com/ngosang/trackerslist
@@ -141,8 +141,8 @@ and that distinction is worth recording. Import any source directly:
 
 ## HTTP API
 
-Read-only — everything that mutates the registry lives in the CLI, so the
-server needs no authentication.
+Read-only. Everything that changes the registry lives in the CLI, so the server
+needs no authentication.
 
 | Endpoint | Returns |
 | --- | --- |
@@ -154,19 +154,19 @@ server needs no authentication.
 | `GET /api/runs` | recent collection runs |
 | `GET /healthz` | liveness |
 
-`limit` defaults per endpoint and is capped at 1000; anything unparseable or
-non-positive falls back to the default.
+`limit` has a default per endpoint and is capped at 1000. Anything unparseable
+or non-positive falls back to the default.
 
 Every `/api/` response carries `Access-Control-Allow-Origin: *`, so any site can
-read the data straight from the browser. Nothing here is private, and the
-endpoints are GET-only, so there is no cross-origin request worth forging.
+read the data straight from the browser. None of it is private and the endpoints
+are GET-only, so there is nothing here for another site to abuse.
 
 ## Running as a service
 
-`deploy/trackerd.service` is a systemd unit for Debian 13. It runs the daemon
-as an unprivileged `tracker` user with its database in `/var/lib/trackerd`,
-which systemd creates on first start. The UI is embedded in the binary, so a
-deployment is one file plus the unit — there is nothing else to copy.
+`deploy/trackerd.service` is a systemd unit for Debian 13. It runs the daemon as
+an unprivileged `tracker` user with its database in `/var/lib/trackerd`, which
+systemd creates on first start. The UI is embedded in the binary, so a
+deployment is one file plus the unit, with nothing else to copy.
 
 ```sh
 make build
@@ -190,9 +190,9 @@ sudo -u tracker trackerd --db /var/lib/trackerd/trackers.db import --url ngosang
 ```
 
 `TRACKERD_DB` is set in the unit but not in your shell, so ad-hoc commands need
-`--db` — or `sudo -u tracker env TRACKERD_DB=/var/lib/trackerd/trackers.db
-trackerd ...` — or they will quietly create a second database in the current
-directory.
+`--db`, or `sudo -u tracker env TRACKERD_DB=/var/lib/trackerd/trackers.db
+trackerd ...`. Leave it out and they will quietly create a second database in
+the current directory.
 
 The unit listens on `127.0.0.1:8080` and expects a reverse proxy in front:
 
@@ -203,14 +203,15 @@ location / {
 }
 ```
 
-Change `--addr` in the unit to `:8080` to listen on every interface instead.
-The unit runs with `ProtectSystem=strict`, an empty capability set and a
+Change `--addr` in the unit to `:8080` to listen on every interface instead. The
+unit runs with `ProtectSystem=strict`, an empty capability set and a
 `@system-service` syscall filter; the daemon only needs outbound DNS and HTTPS
-(for RDAP) and its own state directory. Add `AmbientCapabilities=CAP_NET_BIND_SERVICE`
-if you point `--addr` at a port below 1024.
+(for RDAP) plus its own state directory. Add
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` if you point `--addr` at a port below
+1024.
 
-Nothing served over HTTP mutates state — the API is read-only and the write
-paths live in the CLI — so a public deployment needs no authentication.
+Nothing served over HTTP changes state. The API is read-only and the write paths
+live in the CLI, so a public deployment needs no authentication.
 
 ## Development
 
@@ -247,5 +248,5 @@ legacy/                the original Perl implementation
 ```
 
 Dependencies: `codeberg.org/miekg/dns`, `modernc.org/sqlite` and
-`oschwald/maxminddb-golang` — all pure Go, so `CGO_ENABLED=0` gives a static
+`oschwald/maxminddb-golang`, all pure Go, so `CGO_ENABLED=0` gives a static
 binary that cross-compiles anywhere.

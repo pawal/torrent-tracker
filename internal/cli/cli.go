@@ -142,6 +142,8 @@ type resolverFlags struct {
 	retries   int
 	workers   int
 	threshold int
+	rollAfter int
+	steady    int
 }
 
 func (rf *resolverFlags) register(fs *flag.FlagSet) {
@@ -151,6 +153,10 @@ func (rf *resolverFlags) register(fs *flag.FlagSet) {
 	fs.IntVar(&rf.workers, "workers", 8, "concurrent lookups")
 	fs.IntVar(&rf.threshold, "miss-threshold", 2,
 		"consecutive absences before an address is retired (raise to suppress round-robin churn)")
+	fs.IntVar(&rf.rollAfter, "roll-after", 3,
+		"changed runs before a family is tracked by prefix instead of by address (-1 to keep every address)")
+	fs.IntVar(&rf.steady, "steady-after", 3,
+		"unchanged runs before a rolling family goes back to per-address tracking")
 }
 
 // splitList turns a comma-separated flag value into a slice, dropping blanks.
@@ -184,6 +190,8 @@ func (rf *resolverFlags) collector(st *store.Store, log *slog.Logger) (*collecto
 		Log:           log,
 		Concurrency:   rf.workers,
 		MissThreshold: rf.threshold,
+		RollAfter:     rf.rollAfter,
+		SteadyAfter:   rf.steady,
 	}, nil
 }
 

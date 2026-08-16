@@ -51,6 +51,56 @@ a resolver would look like every tracker dying at once.
 trackers sit behind rotating or round-robin DNS and return a different subset
 each query, so a threshold above 1 keeps that churn out of the change feed.
 
+## Rolling addresses and parked names
+
+Two things generate history that looks like news but is not.
+
+**Hosts that roll their addresses.** A tracker behind a CDN answers with a
+different set of edge addresses every time its TTL expires. Recorded one row at
+a time, `p4p.arenabg.com` alone would write about 70,000 address records and
+140,000 change entries a year, all of them saying the same thing. After three
+consecutive runs with a changed set, the family switches to one record per
+prefix:
+
+```
+p4p.arenabg.com
+  IPv4  65.9.46.42, .62, .78, .93      stable
+  IPv6  2600:9000:2094::/48  rolling   ~8 addresses per run
+```
+
+The prefix comes from enrichment, so a family cannot roll until its addresses
+have an AS behind them. Nothing is reported while the addresses churn inside
+the prefix; a move to a different prefix is a `prefix_added` and a
+`prefix_removed`. If the addresses settle for three runs the family goes back
+to being tracked address by address. `--roll-after=-1` turns the whole thing
+off and keeps every address.
+
+**Names that are no longer trackers.** Expired tracker domains get bought and
+pointed at a parking host, where they carry on answering and so carry on
+looking healthy. The seed list has carried `0123456789nonexistent.com` since
+2012 as a canary: a name meant never to resolve. It resolves now, and 26 dead
+trackers answer with the same address.
+
+That makes the detector self-maintaining. A control name is one known not to be
+a tracker, so whatever it answers with is a parking address by definition, and
+any name resolving only to those is parked:
+
+```sh
+trackerd control 0123456789nonexistent.com   # mark a canary (the seed one is automatic)
+trackerd parked                              # list what it caught
+trackerd parked --disable                    # remove them, keeping their history
+```
+
+Control names are resolved on every pass but are not trackers: they stay out of
+the listings, the counts and the change feed. A tracker that answers with a
+parking address *and* an address of its own is left alone, since only names
+that resolve to nothing but parking are parked.
+
+This catches a parking operator by its addresses rather than by a curated
+blocklist, so it survives the operator renumbering. It only catches operators a
+control name points at, though. Names parked somewhere else need `trackerd rm`,
+or promote one of them to a control name to catch the rest of its cluster.
+
 ## Address enrichment
 
 Every observed address is annotated with its origin AS, the RIR that allocated
@@ -105,6 +155,8 @@ trackerd [--db PATH] [-v] <command>
   import     import announce URLs            [--file PATH | --url SRC] [--dry-run]
   changes    print the recent change feed    [-n N --since 24h --json]
   networks   summarise networks, RIRs and countries [-n N --json]
+  parked     list names that resolve only to parking [--disable --json]
+  control    list or set the control names          [--unset]
   sources    list the built-in public tracker lists
 ```
 
@@ -120,8 +172,8 @@ The database path also comes from `$TRACKERD_DB`.
 
 Collection flags (`serve` and `poll`): `--resolver` (comma-separated, defaults
 to `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`,
-`--miss-threshold`. `serve` additionally takes `--addr`, `--interval` and
-`--no-collect`.
+`--miss-threshold`, `--roll-after`, `--steady-after`. `serve` additionally
+takes `--addr`, `--interval` and `--no-collect`.
 
 ## Tracker lists
 

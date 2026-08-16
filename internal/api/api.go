@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/store"
@@ -49,7 +50,28 @@ func (s *Server) Handler() http.Handler {
 	if s.Static != nil {
 		mux.Handle("GET /", s.spaHandler())
 	}
-	return logging(s.logger(), mux)
+	return logging(s.logger(), cors(mux))
+}
+
+// cors opens /api/ to any origin. The data is public and read-only, so there is
+// nothing for the same-origin policy to protect, and letting other sites query
+// it directly is the point of publishing it.
+func cors(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			// Preflights never reach the mux, which routes GET only and
+			// would answer them with a 405.
+			if r.Method == http.MethodOptions {
+				w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "*")
+				w.Header().Set("Access-Control-Max-Age", "86400")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) logger() *slog.Logger {

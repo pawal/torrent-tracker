@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -292,6 +293,40 @@ func TestMutatingMethodsAreRejected(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("%s /api/trackers = %d, want 405", method, rec.Code)
 		}
+	}
+}
+
+func TestCORSAllowsAnyOrigin(t *testing.T) {
+	h, st := testServer(t)
+	seed(t, st)
+
+	rec := get(t, h, "/api/stats")
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+	}
+	// The frontend is same-origin; only the API is meant to be cross-origin.
+	if rec := get(t, h, "/healthz"); rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("/healthz should not carry CORS headers")
+	}
+}
+
+func TestCORSPreflight(t *testing.T) {
+	h, _ := testServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/api/changes", nil)
+	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "*")
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Methods"); !strings.Contains(got, "GET") {
+		t.Errorf("Access-Control-Allow-Methods = %q, want GET in it", got)
 	}
 }
 

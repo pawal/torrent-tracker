@@ -157,6 +157,10 @@ server needs no authentication.
 `limit` defaults per endpoint and is capped at 1000; anything unparseable or
 non-positive falls back to the default.
 
+Every `/api/` response carries `Access-Control-Allow-Origin: *`, so any site can
+read the data straight from the browser. Nothing here is private, and the
+endpoints are GET-only, so there is no cross-origin request worth forging.
+
 ## Running as a service
 
 `deploy/trackerd.service` is a systemd unit for Debian 13. It runs the daemon

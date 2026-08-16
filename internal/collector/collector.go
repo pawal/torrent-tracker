@@ -191,14 +191,11 @@ func (c *Collector) collectOne(ctx context.Context, t store.Tracker,
 	return plan, nil
 }
 
-// prefixIndex resolves an address to the prefix it sits in. A rolling host
-// answers with addresses nothing has ever seen, so an exact lookup alone would
-// never find one; containment against the prefixes enrichment already knows
-// does, from the first sibling address onwards.
+// prefixIndex resolves an address to its prefix: exactly where enrichment
+// knows the address, by containment where the address is too new to be known.
 type prefixIndex struct {
 	exact map[string]string
-	// known is sorted most specific first, so an address inside nested
-	// prefixes resolves to the tightest one.
+	// known is sorted most specific first.
 	known []netip.Prefix
 }
 

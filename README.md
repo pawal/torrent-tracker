@@ -215,6 +215,10 @@ make help       # all targets
 
 Run `make run` in one shell and `make dev` in another for frontend work.
 
+GitHub Actions runs the same checks on every push and pull request
+(`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, a static build,
+and a frontend build that fails if `web/dist` is out of date with `web/src`.
+
 The frontend build output in `web/dist/` is committed so `go build` and
 `go install` work without Node installed. Rebuild it with `make ui` after
 changing anything under `web/src/`.

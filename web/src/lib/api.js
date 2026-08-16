@@ -19,6 +19,7 @@ export const getTracker = (name) => get(`/api/trackers/${encodeURIComponent(name
 export const getChanges = (limit = 200) => get(`/api/changes?limit=${limit}`)
 export const getRuns = (limit = 10) => get(`/api/runs?limit=${limit}`)
 export const getNetworks = (limit = 20) => get(`/api/networks?limit=${limit}`)
+export const getVersion = () => get('/api/version')
 
 /** Render a network as "AS13335 Cloudflare, Inc." */
 export function describeNetwork(n) {

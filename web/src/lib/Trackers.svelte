@@ -43,7 +43,7 @@
     </div>
 
     <div class="scroll">
-      <table>
+      <table class="tight">
         <thead>
           <tr>
             <th class="col-name">Tracker</th>
@@ -58,7 +58,9 @@
           {#each shown as t (t.id)}
             <tr>
               <td class="mono col-name">
-                <a href="#/t/{encodeURIComponent(t.name)}">{t.name}</a>
+                <!-- Clipped by CSS; the tooltip carries the full name, and the
+                     detail page has it in the heading. -->
+                <a href="#/t/{encodeURIComponent(t.name)}" title={t.name}>{t.name}</a>
               </td>
               <td>
                 <span class="pill {t.last_status || 'unchecked'}">
@@ -69,7 +71,7 @@
                 <!-- Keyed on the whole tuple: one AS can appear twice with a
                      different country or RIR, which collides on asn alone. -->
                 {#each t.networks ?? [] as n (`${n.asn}|${n.holder}|${n.rir}|${n.country}`)}
-                  <span class="block">
+                  <span class="block" title={describeNetwork(n)}>
                     {flag(n.country)}
                     <span class="asn">{describeNetwork(n)}</span>
                     {#if n.rir}<span>· {n.rir}</span>{/if}

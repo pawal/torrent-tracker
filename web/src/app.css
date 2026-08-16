@@ -434,6 +434,24 @@ td.col-name {
   min-width: 13rem;
 }
 
+/* A content-sized table lets one 50-character hostname or AS holder widen its
+   column for every row, pushing the addresses off screen. Cap the free-text
+   columns and ellipsise; the full string stays in the title attribute. The
+   address columns are deliberately left alone — a clipped v6 literal is
+   useless, and those are what people came to read. */
+.tight .col-name a,
+.tight .net-tag .asn {
+  display: inline-block;
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.tight .net-tag .asn {
+  max-width: 14rem;
+}
+
 /* --- change feed ------------------------------------------------------- */
 
 .feed {
@@ -624,6 +642,14 @@ footer.bottom {
   color: var(--muted);
   font-family: var(--mono);
   font-size: var(--text-xs);
+}
+.version-chip > span {
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.version-name {
+  color: var(--ink-2);
 }
 
 @media (width <= 600px) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/store"
+	"github.com/pawal/torrent-tracker/internal/version"
 )
 
 // Server wires the store to an http.Handler.
@@ -33,6 +34,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/changes", s.handleChanges)
 	mux.HandleFunc("GET /api/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/networks", s.handleNetworks)
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("ok\n"))
@@ -98,6 +100,17 @@ func (s *Server) fail(w http.ResponseWriter, status int, msg string) {
 func (s *Server) serverError(w http.ResponseWriter, err error) {
 	s.logger().Error("request failed", "err", err)
 	s.fail(w, http.StatusInternalServerError, "internal error")
+}
+
+// handleVersion reports the build's own version and the DNS library behind
+// every lookup. Cached: it cannot change without a restart.
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]string{"version": version.Version}
+	if dns := version.DNSLib(); dns != "" {
+		resp["dns"] = dns
+	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@
   import TrackerDetail from './lib/TrackerDetail.svelte'
   import Networks from './lib/Networks.svelte'
   import ThemeToggle from './lib/ThemeToggle.svelte'
+  import { getVersion } from './lib/api.js'
 
   // Minimal hash router: '#/', '#/trackers', '#/t/<name>'.
   let hash = $state(window.location.hash || '#/')
@@ -12,6 +13,20 @@
     const onHash = () => (hash = window.location.hash || '#/')
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
+  })
+
+  // Build versions for the footer. Reads no reactive state, so it runs once;
+  // a failure just leaves the chip bare.
+  let version = $state('')
+  let dnsVersion = $state('')
+
+  $effect(() => {
+    getVersion()
+      .then((v) => {
+        version = v.version ?? ''
+        dnsVersion = v.dns ?? ''
+      })
+      .catch(() => {})
   })
 
   const route = $derived.by(() => {
@@ -55,7 +70,9 @@
 
 <footer class="bottom">
   <span class="version-chip">
-    <span>torrent-tracker</span>
-    <span>miekg/dns</span>
+    <span><span class="version-name">torrent-tracker</span>{version}</span>
+    {#if dnsVersion}
+      <span><span class="version-name">miekg/dns</span>{dnsVersion}</span>
+    {/if}
   </span>
 </footer>

@@ -154,6 +154,9 @@ server needs no authentication.
 | `GET /api/runs` | recent collection runs |
 | `GET /healthz` | liveness |
 
+`limit` defaults per endpoint and is capped at 1000; anything unparseable or
+non-positive falls back to the default.
+
 ## Running as a service
 
 `deploy/trackerd.service` is a systemd unit for Debian 13. It runs the daemon

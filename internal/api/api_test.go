@@ -371,6 +371,8 @@ func TestIntParam(t *testing.T) {
 		{"?limit=0", 50},
 		{"?limit=-1", 50},
 		{"?limit=abc", 50},
+		{"?limit=1000", maxLimit},
+		{"?limit=999999", maxLimit},
 	}
 	for _, tt := range tests {
 		r := httptest.NewRequest(http.MethodGet, "/x"+tt.query, nil)

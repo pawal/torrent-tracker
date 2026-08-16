@@ -236,6 +236,11 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, runs)
 }
 
+// maxLimit caps ?limit=. The server is public and unauthenticated, so a caller
+// must not be able to ask it to materialise a whole table in one response. The
+// frontend never asks for more than 200.
+const maxLimit = 1000
+
 func intParam(r *http.Request, name string, def int) int {
 	v := r.URL.Query().Get(name)
 	if v == "" {
@@ -245,5 +250,5 @@ func intParam(r *http.Request, name string, def int) int {
 	if err != nil || n <= 0 {
 		return def
 	}
-	return n
+	return min(n, maxLimit)
 }

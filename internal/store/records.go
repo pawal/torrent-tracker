@@ -20,13 +20,34 @@ const (
 	ActionMiss ActionKind = "miss"
 	// ActionRemove closes an interval and emits an ip_removed change.
 	ActionRemove ActionKind = "remove"
+	// ActionSupersede closes an interval without a change entry, for a record
+	// replaced when a family switches between address and prefix tracking.
+	ActionSupersede ActionKind = "supersede"
 )
 
-// Action is one decision about one address.
+// Action is one decision about one address, or about one prefix when Prefix is
+// set and IP holds a CIDR.
 type Action struct {
 	IP     string
 	Family int
 	Kind   ActionKind
+	Prefix bool
+}
+
+// FamilyState is the per-family churn bookkeeping behind rolling detection.
+// Fingerprint is of the last observed address set, so churn stays measurable
+// once the family is stored as prefixes.
+type FamilyState struct {
+	Family      int    `json:"family"`
+	Fingerprint string `json:"-"`
+	Churn       int    `json:"churn"`
+	Steady      int    `json:"steady"`
+	Rolling     bool   `json:"rolling"`
+
+	// ModeChanged marks a family that has just started or stopped rolling.
+	ModeChanged bool `json:"-"`
+	// Detail describes the new mode for the change feed.
+	Detail string `json:"-"`
 }
 
 // Plan is the full outcome of diffing an observation against stored state.
@@ -36,6 +57,8 @@ type Plan struct {
 	PrevStatus    Status
 	StatusChanged bool
 	Actions       []Action
+	// States is the churn bookkeeping for the families this plan touched.
+	States []FamilyState
 	// LookupErr is the resolver error, if any, for the audit trail.
 	LookupErr string
 	// Duration is how long the lookup took.
@@ -53,22 +76,50 @@ func (p Plan) Changes() int {
 			n++
 		}
 	}
+	for _, st := range p.States {
+		if st.ModeChanged {
+			n++
+		}
+	}
 	return n
 }
+
+const recordColumns = `id, tracker_id, ip, family, first_seen, last_seen, active, miss_count, is_prefix`
 
 // ActiveRecords returns the currently open address intervals for a tracker.
 func (s *Store) ActiveRecords(ctx context.Context, trackerID int64) ([]IPRecord, error) {
 	return s.queryRecords(ctx, `
-		SELECT id, tracker_id, ip, family, first_seen, last_seen, active, miss_count
+		SELECT `+recordColumns+`
 		FROM ip_records WHERE tracker_id = ? AND active = 1 ORDER BY family, ip`, trackerID)
 }
 
 // RecordsFor returns every address interval for a tracker, newest first.
 func (s *Store) RecordsFor(ctx context.Context, trackerID int64) ([]IPRecord, error) {
 	return s.queryRecords(ctx, `
-		SELECT id, tracker_id, ip, family, first_seen, last_seen, active, miss_count
+		SELECT `+recordColumns+`
 		FROM ip_records WHERE tracker_id = ?
 		ORDER BY active DESC, first_seen DESC, ip`, trackerID)
+}
+
+// FamilyStates returns the churn bookkeeping for a tracker, keyed by family.
+func (s *Store) FamilyStates(ctx context.Context, trackerID int64) (map[int]FamilyState, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT family, fingerprint, churn, steady, rolling
+		FROM family_state WHERE tracker_id = ?`, trackerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[int]FamilyState{}
+	for rows.Next() {
+		var st FamilyState
+		if err := rows.Scan(&st.Family, &st.Fingerprint, &st.Churn, &st.Steady, &st.Rolling); err != nil {
+			return nil, err
+		}
+		out[st.Family] = st
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) queryRecords(ctx context.Context, q string, args ...any) ([]IPRecord, error) {
@@ -84,7 +135,8 @@ func (s *Store) queryRecords(ctx context.Context, q string, args ...any) ([]IPRe
 			r           IPRecord
 			first, last string
 		)
-		if err := rows.Scan(&r.ID, &r.TrackerID, &r.IP, &r.Family, &first, &last, &r.Active, &r.MissCount); err != nil {
+		if err := rows.Scan(&r.ID, &r.TrackerID, &r.IP, &r.Family, &first, &last,
+			&r.Active, &r.MissCount, &r.IsPrefix); err != nil {
 			return nil, err
 		}
 		if r.FirstSeen, err = parseTime(first); err != nil {
@@ -113,12 +165,12 @@ func (s *Store) ApplyPlan(ctx context.Context, trackerID int64, plan Plan, now t
 		switch a.Kind {
 		case ActionAdd:
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO ip_records (tracker_id, ip, family, first_seen, last_seen, active, miss_count)
-				VALUES (?, ?, ?, ?, ?, 1, 0)`,
-				trackerID, a.IP, a.Family, ts, ts); err != nil {
+				INSERT INTO ip_records (tracker_id, ip, family, first_seen, last_seen, active, miss_count, is_prefix)
+				VALUES (?, ?, ?, ?, ?, 1, 0, ?)`,
+				trackerID, a.IP, a.Family, ts, ts, a.Prefix); err != nil {
 				return fmt.Errorf("add %s: %w", a.IP, err)
 			}
-			if err := insertChange(ctx, tx, trackerID, ts, ChangeIPAdded, a.IP, a.Family, ""); err != nil {
+			if err := insertChange(ctx, tx, trackerID, ts, addedType(a), a.IP, a.Family, ""); err != nil {
 				return err
 			}
 		case ActionRefresh:
@@ -139,11 +191,39 @@ func (s *Store) ApplyPlan(ctx context.Context, trackerID int64, plan Plan, now t
 				trackerID, a.IP); err != nil {
 				return fmt.Errorf("remove %s: %w", a.IP, err)
 			}
-			if err := insertChange(ctx, tx, trackerID, ts, ChangeIPRemoved, a.IP, a.Family, ""); err != nil {
+			if err := insertChange(ctx, tx, trackerID, ts, removedType(a), a.IP, a.Family, ""); err != nil {
 				return err
+			}
+		case ActionSupersede:
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE ip_records SET active = 0 WHERE tracker_id = ? AND ip = ? AND active = 1`,
+				trackerID, a.IP); err != nil {
+				return fmt.Errorf("supersede %s: %w", a.IP, err)
 			}
 		default:
 			return fmt.Errorf("unknown action kind %q", a.Kind)
+		}
+	}
+
+	for _, st := range plan.States {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO family_state (tracker_id, family, fingerprint, churn, steady, rolling)
+			VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (tracker_id, family) DO UPDATE SET
+				fingerprint = excluded.fingerprint, churn = excluded.churn,
+				steady = excluded.steady, rolling = excluded.rolling`,
+			trackerID, st.Family, st.Fingerprint, st.Churn, st.Steady, st.Rolling); err != nil {
+			return fmt.Errorf("family state %d: %w", st.Family, err)
+		}
+		if !st.ModeChanged {
+			continue
+		}
+		kind := ChangeIPsStable
+		if st.Rolling {
+			kind = ChangeIPsRolling
+		}
+		if err := insertChange(ctx, tx, trackerID, ts, kind, "", st.Family, st.Detail); err != nil {
+			return err
 		}
 	}
 
@@ -167,6 +247,20 @@ func (s *Store) ApplyPlan(ctx context.Context, trackerID int64, plan Plan, now t
 	}
 
 	return tx.Commit()
+}
+
+func addedType(a Action) string {
+	if a.Prefix {
+		return ChangePrefixAdded
+	}
+	return ChangeIPAdded
+}
+
+func removedType(a Action) string {
+	if a.Prefix {
+		return ChangePrefixRemoved
+	}
+	return ChangeIPRemoved
 }
 
 func orUnchecked(s Status) string {

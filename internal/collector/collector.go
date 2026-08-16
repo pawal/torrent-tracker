@@ -4,8 +4,10 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,11 @@ type Collector struct {
 	Concurrency int
 	// MissThreshold is the consecutive absences needed to retire an address.
 	MissThreshold int
+	// RollAfter is how many changed runs switch a family to prefix tracking.
+	// Defaults to 3; negative keeps every address.
+	RollAfter int
+	// SteadyAfter is how many unchanged runs switch it back. Defaults to 3.
+	SteadyAfter int
 	// AfterRun, if set, is called after each pass inside Run. Enrichment hangs
 	// off this so freshly discovered addresses are annotated straight away.
 	AfterRun func(context.Context)
@@ -61,11 +68,32 @@ func (c *Collector) concurrency() int {
 	return 8
 }
 
+func (c *Collector) rollAfter() int {
+	switch {
+	case c.RollAfter < 0:
+		return 0 // rolling detection off
+	case c.RollAfter == 0:
+		return 3
+	}
+	return c.RollAfter
+}
+
 // RunOnce resolves every enabled tracker once and persists the outcome.
 func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 	start := c.now()
 
 	trackers, err := c.Store.ListTrackers(ctx, false)
+	if err != nil {
+		return Summary{}, err
+	}
+
+	// Control names first: what they resolve to is a parking answer.
+	parking, err := c.resolveControls(ctx)
+	if err != nil {
+		return Summary{}, err
+	}
+
+	prefixes, err := c.Store.PrefixMap(ctx)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -96,7 +124,7 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 				return
 			}
 
-			plan, err := c.collectOne(ctx, t)
+			plan, err := c.collectOne(ctx, t, prefixes, parking)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -127,27 +155,102 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 }
 
 // collectOne resolves and persists a single tracker.
-func (c *Collector) collectOne(ctx context.Context, t store.Tracker) (store.Plan, error) {
+func (c *Collector) collectOne(ctx context.Context, t store.Tracker,
+	prefixes map[string]string, parking map[string]bool,
+) (store.Plan, error) {
 	prev, err := c.Store.ActiveRecords(ctx, t.ID)
 	if err != nil {
 		return store.Plan{}, err
 	}
-
-	obs := Observation{
-		A:    c.Resolver.Lookup(ctx, t.Name, resolver.TypeA),
-		AAAA: c.Resolver.Lookup(ctx, t.Name, resolver.TypeAAAA),
+	states, err := c.Store.FamilyStates(ctx, t.ID)
+	if err != nil {
+		return store.Plan{}, err
 	}
 
-	plan := Diff(prev, t.LastStatus, obs, c.MissThreshold)
+	obs := c.resolve(ctx, t.Name)
+
+	plan := Diff(prev, states, t.LastStatus, obs, Options{
+		MissThreshold: c.MissThreshold,
+		RollAfter:     c.rollAfter(),
+		SteadyAfter:   c.SteadyAfter,
+		PrefixFor:     func(ip string) string { return prefixes[ip] },
+	})
 	plan.Duration = time.Duration(obs.Duration()) * time.Millisecond
 
 	if err := c.Store.ApplyPlan(ctx, t.ID, plan, c.now()); err != nil {
+		return plan, err
+	}
+	if err := c.markParked(ctx, t, obs, parking); err != nil {
 		return plan, err
 	}
 	if plan.Changes() > 0 {
 		c.log().Info("tracker changed", "tracker", t.Name, "status", plan.Status, "changes", plan.Changes())
 	}
 	return plan, nil
+}
+
+func (c *Collector) resolve(ctx context.Context, name string) Observation {
+	return Observation{
+		A:    c.Resolver.Lookup(ctx, name, resolver.TypeA),
+		AAAA: c.Resolver.Lookup(ctx, name, resolver.TypeAAAA),
+	}
+}
+
+// resolveControls returns the addresses the control names answer with.
+func (c *Collector) resolveControls(ctx context.Context) (map[string]bool, error) {
+	controls, err := c.Store.ListControls(ctx)
+	if err != nil {
+		return nil, err
+	}
+	parking := map[string]bool{}
+	for _, t := range controls {
+		if ctx.Err() != nil {
+			break
+		}
+		obs := c.resolve(ctx, t.Name)
+		for _, r := range []resolver.Result{obs.A, obs.AAAA} {
+			for _, ip := range r.Addrs {
+				parking[ip] = true
+			}
+		}
+	}
+	if len(parking) > 0 {
+		c.log().Debug("parking addresses", "controls", len(controls), "addresses", len(parking))
+	}
+	return parking, nil
+}
+
+// markParked flags a tracker whose every answer is a parking address. It
+// judges the observation, not the records, so prefix rows do not hide it.
+func (c *Collector) markParked(ctx context.Context, t store.Tracker, obs Observation, parking map[string]bool) error {
+	if len(parking) == 0 {
+		return nil
+	}
+	addrs := append(append([]string{}, obs.A.Addrs...), obs.AAAA.Addrs...)
+	parked := len(addrs) > 0
+	for _, ip := range addrs {
+		if !parking[ip] {
+			parked = false
+			break
+		}
+	}
+	// A name that did not resolve says nothing either way.
+	if !parked && len(addrs) == 0 {
+		return nil
+	}
+
+	detail := ""
+	if parked {
+		detail = fmt.Sprintf("resolves only to parking addresses: %s", strings.Join(addrs, " "))
+	}
+	changed, err := c.Store.SetParked(ctx, t.ID, parked, detail, c.now())
+	if err != nil {
+		return err
+	}
+	if changed && parked {
+		c.log().Info("tracker parked", "tracker", t.Name, "addresses", len(addrs))
+	}
+	return nil
 }
 
 // Run collects immediately, then every interval until ctx is cancelled. Each

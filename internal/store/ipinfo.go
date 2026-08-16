@@ -163,7 +163,7 @@ func (s *Store) IPsNeedingEnrichment(ctx context.Context, maxAge time.Duration, 
 		SELECT DISTINCT r.ip, r.family
 		FROM ip_records r
 		LEFT JOIN ip_info i ON i.ip = r.ip
-		WHERE r.active = 1 AND (i.ip IS NULL OR i.fetched_at < ?)
+		WHERE r.active = 1 AND r.is_prefix = 0 AND (i.ip IS NULL OR i.fetched_at < ?)
 		ORDER BY COALESCE(i.fetched_at, ''), r.ip
 		LIMIT ?`, cutoff, limit)
 	if err != nil {
@@ -183,8 +183,10 @@ func (s *Store) IPsNeedingEnrichment(ctx context.Context, maxAge time.Duration, 
 }
 
 // IPInfoForTracker returns placement keyed by address for one tracker's whole
-// history, so the detail view can annotate every interval.
+// history. Prefix records are keyed by CIDR, taking any one address inside.
 func (s *Store) IPInfoForTracker(ctx context.Context, trackerID int64) (map[string]IPInfo, error) {
+	out := map[string]IPInfo{}
+
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT `+prefixed(ipInfoColumns, "i")+`
 		FROM ip_info i
@@ -194,7 +196,6 @@ func (s *Store) IPInfoForTracker(ctx context.Context, trackerID int64) (map[stri
 	}
 	defer rows.Close()
 
-	out := map[string]IPInfo{}
 	for rows.Next() {
 		info, err := scanIPInfo(rows)
 		if err != nil {
@@ -202,7 +203,29 @@ func (s *Store) IPInfoForTracker(ctx context.Context, trackerID int64) (map[stri
 		}
 		out[info.IP] = info
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	prefixes, err := s.db.QueryContext(ctx, `
+		SELECT `+prefixed(ipInfoColumns, "i")+`
+		FROM ip_info i
+		WHERE i.prefix IN (SELECT ip FROM ip_records WHERE tracker_id = ? AND is_prefix = 1)
+		GROUP BY i.prefix`, trackerID)
+	if err != nil {
+		return nil, err
+	}
+	defer prefixes.Close()
+
+	for prefixes.Next() {
+		info, err := scanIPInfo(prefixes)
+		if err != nil {
+			return nil, err
+		}
+		info.IP = info.Prefix
+		out[info.Prefix] = info
+	}
+	return out, prefixes.Err()
 }
 
 // AllIPInfo returns placement for every currently active address, keyed by
@@ -228,6 +251,25 @@ func (s *Store) AllIPInfo(ctx context.Context) (map[string]IPInfo, error) {
 	return out, rows.Err()
 }
 
+// PrefixMap returns the prefix each enriched address sits in.
+func (s *Store) PrefixMap(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ip, prefix FROM ip_info WHERE prefix != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[string]string{}
+	for rows.Next() {
+		var ip, prefix string
+		if err := rows.Scan(&ip, &prefix); err != nil {
+			return nil, err
+		}
+		out[ip] = prefix
+	}
+	return out, rows.Err()
+}
+
 // prefixed qualifies a bare column list with a table alias.
 func prefixed(columns, alias string) string {
 	parts := strings.Split(columns, ",")
@@ -236,6 +278,11 @@ func prefixed(columns, alias string) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// recordInfoJoin ties a record to its enrichment: addresses join on the
+// address, prefix records on the prefix they stand for.
+const recordInfoJoin = `JOIN ip_info i ON (r.is_prefix = 0 AND i.ip = r.ip)
+		                     OR (r.is_prefix = 1 AND i.prefix = r.ip)`
 
 // NetworkStat aggregates active addresses by network or registry.
 type NetworkStat struct {
@@ -255,7 +302,7 @@ func (s *Store) TopNetworks(ctx context.Context, limit int) ([]NetworkStat, erro
 		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), ''),
 		       COUNT(DISTINCT r.tracker_id), COUNT(DISTINCT r.ip)
 		FROM ip_records r
-		JOIN ip_info i ON i.ip = r.ip
+		`+recordInfoJoin+`
 		WHERE r.active = 1
 		GROUP BY i.asn
 		ORDER BY COUNT(DISTINCT r.tracker_id) DESC, COUNT(DISTINCT r.ip) DESC
@@ -268,7 +315,7 @@ func (s *Store) ByRIR(ctx context.Context) ([]NetworkStat, error) {
 		SELECT CASE WHEN i.rir = '' THEN 'unknown' ELSE i.rir END, '',
 		       COUNT(DISTINCT r.tracker_id), COUNT(DISTINCT r.ip)
 		FROM ip_records r
-		JOIN ip_info i ON i.ip = r.ip
+		`+recordInfoJoin+`
 		WHERE r.active = 1
 		GROUP BY i.rir
 		ORDER BY COUNT(DISTINCT r.tracker_id) DESC`)
@@ -283,7 +330,7 @@ func (s *Store) ByCountry(ctx context.Context, limit int) ([]NetworkStat, error)
 		SELECT CASE WHEN i.country = '' THEN 'unknown' ELSE i.country END, '',
 		       COUNT(DISTINCT r.tracker_id), COUNT(DISTINCT r.ip)
 		FROM ip_records r
-		JOIN ip_info i ON i.ip = r.ip
+		`+recordInfoJoin+`
 		WHERE r.active = 1
 		GROUP BY i.country
 		ORDER BY COUNT(DISTINCT r.tracker_id) DESC
@@ -319,7 +366,7 @@ type EnrichmentCoverage struct {
 func (s *Store) Coverage(ctx context.Context) (EnrichmentCoverage, error) {
 	var c EnrichmentCoverage
 	err := s.db.QueryRowContext(ctx, `
-		SELECT (SELECT COUNT(DISTINCT ip) FROM ip_records WHERE active = 1),
+		SELECT (SELECT COUNT(DISTINCT ip) FROM ip_records WHERE active = 1 AND is_prefix = 0),
 		       (SELECT COUNT(DISTINCT r.ip) FROM ip_records r JOIN ip_info i ON i.ip = r.ip WHERE r.active = 1),
 		       (SELECT COUNT(DISTINCT r.ip) FROM ip_records r JOIN ip_info i ON i.ip = r.ip WHERE r.active = 1 AND i.asn != 0)`).
 		Scan(&c.ActiveIPs, &c.Enriched, &c.WithASN)
@@ -342,7 +389,7 @@ func (s *Store) TrackerNetworks(ctx context.Context) (map[int64][]NetworkRef, er
 		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), i.network_name),
 		       i.rir, i.country
 		FROM ip_records r
-		JOIN ip_info i ON i.ip = r.ip
+		`+recordInfoJoin+`
 		WHERE r.active = 1
 		ORDER BY r.tracker_id, i.asn`)
 	if err != nil {

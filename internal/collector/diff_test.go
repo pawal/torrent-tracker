@@ -81,8 +81,15 @@ func TestObservationStatus(t *testing.T) {
 	}
 }
 
+// diffAddrs is the per-address diff: rolling detection needs RollAfter set, so
+// leaving it at zero keeps these tests on the address-by-address behaviour they
+// were written for.
+func diffAddrs(prev []store.IPRecord, prevStatus store.Status, obs Observation, missThreshold int) store.Plan {
+	return Diff(prev, nil, prevStatus, obs, Options{MissThreshold: missThreshold})
+}
+
 func TestDiffFirstObservation(t *testing.T) {
-	plan := Diff(nil, "", Observation{A: ok("1.2.3.4", "5.6.7.8"), AAAA: ok("2001:db8::1")}, 1)
+	plan := diffAddrs(nil, "", Observation{A: ok("1.2.3.4", "5.6.7.8"), AAAA: ok("2001:db8::1")}, 1)
 
 	if plan.Status != store.StatusOK {
 		t.Errorf("status = %q, want ok", plan.Status)
@@ -98,7 +105,7 @@ func TestDiffFirstObservation(t *testing.T) {
 
 func TestDiffSteadyState(t *testing.T) {
 	prev := []store.IPRecord{active("1.2.3.4", 4, 0), active("2001:db8::1", 6, 0)}
-	plan := Diff(prev, store.StatusOK, Observation{A: ok("1.2.3.4"), AAAA: ok("2001:db8::1")}, 1)
+	plan := diffAddrs(prev, store.StatusOK, Observation{A: ok("1.2.3.4"), AAAA: ok("2001:db8::1")}, 1)
 
 	if plan.StatusChanged {
 		t.Error("unchanged status should not be reported as a change")
@@ -111,7 +118,7 @@ func TestDiffSteadyState(t *testing.T) {
 
 func TestDiffAddressReplaced(t *testing.T) {
 	prev := []store.IPRecord{active("1.2.3.4", 4, 0)}
-	plan := Diff(prev, store.StatusOK, Observation{A: ok("9.9.9.9"), AAAA: nodata()}, 1)
+	plan := diffAddrs(prev, store.StatusOK, Observation{A: ok("9.9.9.9"), AAAA: nodata()}, 1)
 
 	wantActions(t, plan, "add 9.9.9.9", "remove 1.2.3.4")
 	if got := plan.Changes(); got != 2 {
@@ -126,7 +133,7 @@ func TestDiffLookupFailureLeavesRecordsAlone(t *testing.T) {
 
 	for _, status := range []store.Status{store.StatusServFail, store.StatusTimeout, store.StatusError} {
 		t.Run(string(status), func(t *testing.T) {
-			plan := Diff(prev, store.StatusOK, Observation{A: fail(status), AAAA: fail(status)}, 1)
+			plan := diffAddrs(prev, store.StatusOK, Observation{A: fail(status), AAAA: fail(status)}, 1)
 			if len(plan.Actions) != 0 {
 				t.Errorf("failed lookup produced actions: %v", keys(actionSet(plan)))
 			}
@@ -140,7 +147,7 @@ func TestDiffLookupFailureLeavesRecordsAlone(t *testing.T) {
 // A partial failure must not retire the healthy family's addresses either.
 func TestDiffPerFamilyIsolation(t *testing.T) {
 	prev := []store.IPRecord{active("1.2.3.4", 4, 0), active("2001:db8::1", 6, 0)}
-	plan := Diff(prev, store.StatusOK, Observation{
+	plan := diffAddrs(prev, store.StatusOK, Observation{
 		A:    ok("1.2.3.4"),
 		AAAA: fail(store.StatusServFail),
 	}, 1)
@@ -152,7 +159,7 @@ func TestDiffPerFamilyIsolation(t *testing.T) {
 // NXDOMAIN is authoritative, so addresses really are gone.
 func TestDiffNXDomainRetiresAddresses(t *testing.T) {
 	prev := []store.IPRecord{active("1.2.3.4", 4, 0), active("2001:db8::1", 6, 0)}
-	plan := Diff(prev, store.StatusOK, Observation{A: nxdomain(), AAAA: nxdomain()}, 1)
+	plan := diffAddrs(prev, store.StatusOK, Observation{A: nxdomain(), AAAA: nxdomain()}, 1)
 
 	wantActions(t, plan, "remove 1.2.3.4", "remove 2001:db8::1")
 	if plan.Status != store.StatusNXDomain {
@@ -163,7 +170,7 @@ func TestDiffNXDomainRetiresAddresses(t *testing.T) {
 // NODATA is also authoritative: the name exists but has no addresses.
 func TestDiffNoDataRetiresAddresses(t *testing.T) {
 	prev := []store.IPRecord{active("1.2.3.4", 4, 0)}
-	plan := Diff(prev, store.StatusOK, Observation{A: nodata(), AAAA: nodata()}, 1)
+	plan := diffAddrs(prev, store.StatusOK, Observation{A: nodata(), AAAA: nodata()}, 1)
 	wantActions(t, plan, "remove 1.2.3.4")
 }
 
@@ -179,7 +186,7 @@ func TestDiffMissThreshold(t *testing.T) {
 		{5, "remove 1.2.3.4"},
 	} {
 		prev := []store.IPRecord{active("1.2.3.4", 4, tc.missSoFar)}
-		plan := Diff(prev, store.StatusOK, Observation{A: nodata(), AAAA: nodata()}, 3)
+		plan := diffAddrs(prev, store.StatusOK, Observation{A: nodata(), AAAA: nodata()}, 3)
 		wantActions(t, plan, tc.want)
 	}
 }
@@ -187,7 +194,7 @@ func TestDiffMissThreshold(t *testing.T) {
 func TestDiffMissThresholdFloor(t *testing.T) {
 	// A threshold below 1 is nonsense; treat it as remove-immediately.
 	prev := []store.IPRecord{active("1.2.3.4", 4, 0)}
-	plan := Diff(prev, store.StatusOK, Observation{A: nodata(), AAAA: nodata()}, 0)
+	plan := diffAddrs(prev, store.StatusOK, Observation{A: nodata(), AAAA: nodata()}, 0)
 	wantActions(t, plan, "remove 1.2.3.4")
 }
 
@@ -196,7 +203,7 @@ func TestDiffAddressReturns(t *testing.T) {
 	prev := []store.IPRecord{
 		{IP: "1.2.3.4", Family: 4, Active: false}, // closed interval
 	}
-	plan := Diff(prev, store.StatusOK, Observation{A: ok("1.2.3.4"), AAAA: nodata()}, 1)
+	plan := diffAddrs(prev, store.StatusOK, Observation{A: ok("1.2.3.4"), AAAA: nodata()}, 1)
 	wantActions(t, plan, "add 1.2.3.4")
 }
 
@@ -206,7 +213,7 @@ func TestDiffRoundRobinChurnSuppressed(t *testing.T) {
 	prev := []store.IPRecord{
 		active("1.1.1.1", 4, 0), active("2.2.2.2", 4, 0), active("3.3.3.3", 4, 0),
 	}
-	plan := Diff(prev, store.StatusOK, Observation{A: ok("1.1.1.1"), AAAA: nodata()}, 4)
+	plan := diffAddrs(prev, store.StatusOK, Observation{A: ok("1.1.1.1"), AAAA: nodata()}, 4)
 
 	wantActions(t, plan, "refresh 1.1.1.1", "miss 2.2.2.2", "miss 3.3.3.3")
 	if plan.Changes() != 0 {
@@ -218,9 +225,9 @@ func TestDiffIsDeterministic(t *testing.T) {
 	prev := []store.IPRecord{active("1.1.1.1", 4, 0), active("2.2.2.2", 4, 0)}
 	obs := Observation{A: ok("3.3.3.3", "1.1.1.1"), AAAA: nodata()}
 
-	first := Diff(prev, store.StatusOK, obs, 1)
+	first := diffAddrs(prev, store.StatusOK, obs, 1)
 	for i := 0; i < 20; i++ {
-		got := Diff(prev, store.StatusOK, obs, 1)
+		got := diffAddrs(prev, store.StatusOK, obs, 1)
 		if len(got.Actions) != len(first.Actions) {
 			t.Fatalf("action count varies between runs")
 		}
@@ -241,4 +248,158 @@ func TestObservationErrAndDuration(t *testing.T) {
 	if got := clean.Err(); got != "" {
 		t.Errorf("Err() = %q, want empty when both succeed", got)
 	}
+}
+
+// --- rolling families --------------------------------------------------
+//
+// A host behind a CDN answers with a different set of edge addresses every
+// time its TTL expires. Recorded address by address that is thousands of rows
+// a year saying the same thing, so after RollAfter consecutive runs with a
+// changed set the family is stored as the prefix the addresses sit in, and the
+// individual addresses stop being written down.
+
+// cdn is one CloudFront-shaped answer: every address in one /48.
+func cdn(suffixes ...string) resolver.Result {
+	addrs := make([]string, len(suffixes))
+	for i, s := range suffixes {
+		addrs[i] = "2600:9000:2094:" + s + "::1"
+	}
+	return resolver.Result{Status: store.StatusOK, Addrs: addrs}
+}
+
+// stateFor picks one family's bookkeeping out of a plan. Both families get a
+// state on every run, including the one answering NODATA, so index order is
+// not something to rely on.
+func stateFor(t *testing.T, p store.Plan, family int) store.FamilyState {
+	t.Helper()
+	for _, st := range p.States {
+		if st.Family == family {
+			return st
+		}
+	}
+	t.Fatalf("no state for family %d in %+v", family, p.States)
+	return store.FamilyState{}
+}
+
+// rollOpts collapses onto the /48 every cdn() address belongs to.
+func rollOpts(rollAfter int) Options {
+	return Options{
+		MissThreshold: 1,
+		RollAfter:     rollAfter,
+		PrefixFor: func(ip string) string {
+			if len(ip) > 15 && ip[:15] == "2600:9000:2094:" {
+				return "2600:9000:2094::/48"
+			}
+			return ""
+		},
+	}
+}
+
+func TestRollingStartsAfterConsecutiveChanges(t *testing.T) {
+	opts := rollOpts(3)
+	states := map[int]store.FamilyState{}
+	prev := []store.IPRecord{}
+
+	// Run 1 establishes the baseline; runs 2 and 3 each change the set. The
+	// third change is what tips the family over.
+	answers := []resolver.Result{cdn("1400"), cdn("3c00"), cdn("5c00"), cdn("7600")}
+	var plan store.Plan
+	for i, a := range answers {
+		plan = Diff(prev, states, store.StatusOK, Observation{A: nodata(), AAAA: a}, opts)
+		for _, st := range plan.States {
+			states[st.Family] = st
+		}
+		if i < len(answers)-1 && states[6].Rolling {
+			t.Fatalf("rolling after %d runs, want it to wait for %d changed runs", i+1, opts.RollAfter)
+		}
+	}
+
+	if !states[6].Rolling {
+		t.Fatalf("family 6 not rolling after %d changed runs: %+v", len(answers)-1, states[6])
+	}
+	if !stateFor(t, plan, 6).ModeChanged {
+		t.Error("the switch into rolling should be reported as a mode change")
+	}
+	wantActions(t, plan, "add 2600:9000:2094::/48")
+	if !plan.Actions[0].Prefix {
+		t.Error("the added record should be marked as a prefix")
+	}
+}
+
+func TestRollingSupersedesAddressRecords(t *testing.T) {
+	opts := rollOpts(1)
+	states := map[int]store.FamilyState{6: {Family: 6, Fingerprint: "old", Churn: 0}}
+	prev := []store.IPRecord{active("2600:9000:2094:1400::1", 6, 0), active("2600:9000:2094:3c00::1", 6, 0)}
+
+	plan := Diff(prev, states, store.StatusOK, Observation{A: nodata(), AAAA: cdn("5c00")}, opts)
+
+	// The addresses are not gone, they are just no longer how we record this
+	// family, so they close without an ip_removed entry.
+	wantActions(t, plan,
+		"supersede 2600:9000:2094:1400::1",
+		"supersede 2600:9000:2094:3c00::1",
+		"add 2600:9000:2094::/48")
+	if n := plan.Changes(); n != 2 {
+		t.Errorf("changes = %d, want 2: the prefix add and the mode change", n)
+	}
+}
+
+func TestRollingHoldsWhileThePrefixIsUnchanged(t *testing.T) {
+	opts := rollOpts(1)
+	states := map[int]store.FamilyState{6: {Family: 6, Fingerprint: "old", Rolling: true}}
+	prev := []store.IPRecord{{IP: "2600:9000:2094::/48", Family: 6, Active: true, IsPrefix: true}}
+
+	plan := Diff(prev, states, store.StatusOK, Observation{A: nodata(), AAAA: cdn("a800", "ce00")}, opts)
+
+	// A completely different set of addresses, same prefix: nothing to report.
+	wantActions(t, plan, "refresh 2600:9000:2094::/48")
+	if n := plan.Changes(); n != 0 {
+		t.Errorf("changes = %d, want 0 while the prefix holds", n)
+	}
+}
+
+func TestRollingEndsWhenAddressesSettle(t *testing.T) {
+	opts := rollOpts(1)
+	opts.SteadyAfter = 2
+	answer := cdn("1400")
+	states := map[int]store.FamilyState{
+		6: {Family: 6, Fingerprint: fingerprint(answer.Addrs), Rolling: true, Steady: 1},
+	}
+	prev := []store.IPRecord{{IP: "2600:9000:2094::/48", Family: 6, Active: true, IsPrefix: true}}
+
+	plan := Diff(prev, states, store.StatusOK, Observation{A: nodata(), AAAA: answer}, opts)
+
+	if stateFor(t, plan, 6).Rolling {
+		t.Error("still rolling after the address set held still")
+	}
+	wantActions(t, plan, "supersede 2600:9000:2094::/48", "add 2600:9000:2094:1400::1")
+}
+
+func TestRollingWaitsForEnrichment(t *testing.T) {
+	opts := rollOpts(1)
+	opts.PrefixFor = func(string) string { return "" } // nothing enriched yet
+	states := map[int]store.FamilyState{6: {Family: 6, Fingerprint: "old"}}
+	prev := []store.IPRecord{active("2600:9000:2094:1400::1", 6, 0)}
+
+	plan := Diff(prev, states, store.StatusOK, Observation{A: nodata(), AAAA: cdn("5c00")}, opts)
+
+	// Without a prefix to collapse onto there is nothing to do but wait: the
+	// stored records are left exactly as they were.
+	wantActions(t, plan)
+	if st := stateFor(t, plan, 6); st.Rolling {
+		t.Error("rolling with no prefix data to roll onto")
+	} else if st.Churn == 0 {
+		t.Error("churn should still accumulate while waiting for enrichment")
+	}
+}
+
+func TestRollingOffByDefault(t *testing.T) {
+	states := map[int]store.FamilyState{6: {Family: 6, Fingerprint: "old", Churn: 99}}
+	plan := Diff(nil, states, store.StatusOK,
+		Observation{A: nodata(), AAAA: cdn("1400")}, Options{MissThreshold: 1})
+
+	if stateFor(t, plan, 6).Rolling {
+		t.Error("rolling without RollAfter set")
+	}
+	wantActions(t, plan, "add 2600:9000:2094:1400::1")
 }

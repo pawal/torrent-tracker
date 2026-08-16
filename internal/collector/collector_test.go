@@ -444,3 +444,111 @@ func TestCollectorDefaults(t *testing.T) {
 		t.Error("Now override was ignored")
 	}
 }
+
+// --- parked names ------------------------------------------------------
+//
+// Expired tracker domains get bought up and pointed at a parking host, where
+// they keep answering and so keep looking alive. A control name is one known
+// never to have been a tracker, so whatever it resolves to is a parking
+// answer, and any name resolving only to those is parked rather than alive.
+
+func TestParkedDetectedByControlName(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := t.Context()
+
+	canary := addTracker(t, st, "0123456789nonexistent.com")
+	if err := st.SetControl(ctx, canary.Name, true); err != nil {
+		t.Fatal(err)
+	}
+	fake.set(canary.Name, resolver.TypeA, ok("34.66.57.33"))
+
+	parked := addTracker(t, st, "tracker.dead.example")
+	fake.set(parked.Name, resolver.TypeA, ok("34.66.57.33"))
+
+	alive := addTracker(t, st, "tracker.alive.example")
+	fake.set(alive.Name, resolver.TypeA, ok("1.2.3.4"))
+
+	// Sharing the parking host is only damning if that is all there is: a
+	// tracker that also answers with an address of its own is still alive.
+	mixed := addTracker(t, st, "tracker.mixed.example")
+	fake.set(mixed.Name, resolver.TypeA, ok("34.66.57.33", "5.6.7.8"))
+
+	if _, err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]bool{}
+	list, err := st.ListParked(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range list {
+		got[tr.Name] = true
+	}
+	if !got[parked.Name] {
+		t.Errorf("%s resolves only to the parking address but was not flagged", parked.Name)
+	}
+	for _, name := range []string{alive.Name, mixed.Name, canary.Name} {
+		if got[name] {
+			t.Errorf("%s should not be flagged as parked", name)
+		}
+	}
+}
+
+func TestControlNamesAreNotTrackers(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := t.Context()
+
+	canary := addTracker(t, st, "0123456789nonexistent.com")
+	if err := st.SetControl(ctx, canary.Name, true); err != nil {
+		t.Fatal(err)
+	}
+	fake.set(canary.Name, resolver.TypeA, ok("34.66.57.33"))
+	addTracker(t, st, "tracker.real.example")
+
+	sum, err := c.RunOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The control name is still resolved, it just is not counted or listed.
+	if sum.Trackers != 1 {
+		t.Errorf("run covered %d trackers, want 1 with the control excluded", sum.Trackers)
+	}
+	stats, err := st.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Trackers != 1 {
+		t.Errorf("stats count %d trackers, want 1", stats.Trackers)
+	}
+}
+
+func TestParkedFlagClearsWhenTheNameComesBack(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := t.Context()
+
+	canary := addTracker(t, st, "canary.example")
+	if err := st.SetControl(ctx, canary.Name, true); err != nil {
+		t.Fatal(err)
+	}
+	fake.set(canary.Name, resolver.TypeA, ok("34.66.57.33"))
+
+	tr := addTracker(t, st, "tracker.revived.example")
+	fake.set(tr.Name, resolver.TypeA, ok("34.66.57.33"))
+	if _, err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.set(tr.Name, resolver.TypeA, ok("9.9.9.9"))
+	if _, err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := st.ListParked(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Errorf("still parked after answering with its own address: %+v", list)
+	}
+}

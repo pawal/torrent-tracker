@@ -11,7 +11,7 @@ import (
 // ErrNotFound is returned when a named tracker does not exist.
 var ErrNotFound = errors.New("tracker not found")
 
-const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at`
+const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at, control, parked`
 
 func scanTracker(sc interface{ Scan(...any) error }) (Tracker, error) {
 	var (
@@ -19,7 +19,8 @@ func scanTracker(sc interface{ Scan(...any) error }) (Tracker, error) {
 		created   string
 		lastCheck sql.NullString
 	)
-	if err := sc.Scan(&t.ID, &t.Name, &t.Source, &t.Enabled, &created, &t.LastStatus, &lastCheck); err != nil {
+	if err := sc.Scan(&t.ID, &t.Name, &t.Source, &t.Enabled, &created, &t.LastStatus, &lastCheck,
+		&t.Control, &t.Parked); err != nil {
 		return t, err
 	}
 	var err error
@@ -102,15 +103,30 @@ func (s *Store) RemoveTracker(ctx context.Context, name string, purge bool) erro
 	return nil
 }
 
-// ListTrackers returns trackers ordered by name.
+// ListTrackers returns trackers ordered by name, excluding control names.
 func (s *Store) ListTrackers(ctx context.Context, includeDisabled bool) ([]Tracker, error) {
-	q := `SELECT ` + trackerColumns + ` FROM trackers`
+	q := `SELECT ` + trackerColumns + ` FROM trackers WHERE control = 0`
 	if !includeDisabled {
-		q += ` WHERE enabled = 1`
+		q += ` AND enabled = 1`
 	}
 	q += ` ORDER BY name`
+	return s.queryTrackers(ctx, q)
+}
 
-	rows, err := s.db.QueryContext(ctx, q)
+// ListControls returns the enabled control names.
+func (s *Store) ListControls(ctx context.Context) ([]Tracker, error) {
+	return s.queryTrackers(ctx,
+		`SELECT `+trackerColumns+` FROM trackers WHERE control = 1 AND enabled = 1 ORDER BY name`)
+}
+
+// ListParked returns the enabled trackers currently flagged as parked.
+func (s *Store) ListParked(ctx context.Context) ([]Tracker, error) {
+	return s.queryTrackers(ctx,
+		`SELECT `+trackerColumns+` FROM trackers WHERE parked = 1 AND enabled = 1 AND control = 0 ORDER BY name`)
+}
+
+func (s *Store) queryTrackers(ctx context.Context, q string, args ...any) ([]Tracker, error) {
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -127,12 +143,59 @@ func (s *Store) ListTrackers(ctx context.Context, includeDisabled bool) ([]Track
 	return trackers, rows.Err()
 }
 
+// SetControl marks or unmarks a name as a control.
+func (s *Store) SetControl(ctx context.Context, name string, control bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE trackers SET control = ? WHERE name = ?`, control, name)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("%q: %w", name, ErrNotFound)
+	}
+	return nil
+}
+
+// SetParked records whether a tracker resolves only to parking addresses,
+// and reports whether the flag changed.
+func (s *Store) SetParked(ctx context.Context, trackerID int64, parked bool, detail string, now time.Time) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var was bool
+	if err := tx.QueryRowContext(ctx, `SELECT parked FROM trackers WHERE id = ?`, trackerID).Scan(&was); err != nil {
+		return false, err
+	}
+	if was == parked {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE trackers SET parked = ? WHERE id = ?`, parked, trackerID); err != nil {
+		return false, err
+	}
+	// Only the transition into parked is news.
+	if parked {
+		if err := insertChangeNullIP(ctx, tx, trackerID, fmtTime(now), ChangeParked, detail); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
+}
+
 // TrackerView is a tracker plus its currently active addresses, for list views.
 type TrackerView struct {
 	Tracker
 	IPv4     []string     `json:"ipv4"`
 	IPv6     []string     `json:"ipv6"`
 	Networks []NetworkRef `json:"networks"`
+	// Rolling lists families tracked by prefix; their IPv4/IPv6 entries are
+	// CIDRs, not addresses.
+	Rolling []int `json:"rolling,omitempty"`
 }
 
 // ListTrackerViews returns trackers with their active addresses attached.
@@ -177,6 +240,26 @@ func (s *Store) ListTrackerViews(ctx context.Context, includeDisabled bool) ([]T
 		}
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	rolling, err := s.db.QueryContext(ctx, `
+		SELECT tracker_id, family FROM family_state WHERE rolling = 1 ORDER BY family`)
+	if err != nil {
+		return nil, err
+	}
+	defer rolling.Close()
+	for rolling.Next() {
+		var id int64
+		var family int
+		if err := rolling.Scan(&id, &family); err != nil {
+			return nil, err
+		}
+		if i, ok := index[id]; ok {
+			views[i].Rolling = append(views[i].Rolling, family)
+		}
+	}
+	if err := rolling.Err(); err != nil {
 		return nil, err
 	}
 

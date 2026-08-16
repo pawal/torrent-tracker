@@ -46,6 +46,16 @@ const (
 	// ChangeASNChanged records an address moving between origin ASes without
 	// the address itself changing.
 	ChangeASNChanged = "asn_changed"
+	// ChangePrefixAdded and ChangePrefixRemoved are the rolling-family
+	// equivalents of ip_added and ip_removed.
+	ChangePrefixAdded   = "prefix_added"
+	ChangePrefixRemoved = "prefix_removed"
+	// ChangeIPsRolling and ChangeIPsStable mark a family switching between
+	// per-address and per-prefix tracking.
+	ChangeIPsRolling = "ips_rolling"
+	ChangeIPsStable  = "ips_stable"
+	// ChangeParked marks a name as no longer a tracker but a parked domain.
+	ChangeParked = "parked"
 )
 
 // Tracker is a known tracker hostname.
@@ -57,6 +67,10 @@ type Tracker struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	LastStatus    Status     `json:"last_status"`
 	LastCheckedAt *time.Time `json:"last_checked_at"`
+	// Control marks a name kept only to expose parking answers.
+	Control bool `json:"control,omitempty"`
+	// Parked marks a name that now resolves only to parking addresses.
+	Parked bool `json:"parked,omitempty"`
 }
 
 // IPRecord is one contiguous period during which an address was observed.
@@ -69,6 +83,9 @@ type IPRecord struct {
 	LastSeen  time.Time `json:"last_seen"`
 	Active    bool      `json:"active"`
 	MissCount int       `json:"-"`
+	// IsPrefix marks a record whose IP holds a CIDR, standing in for a
+	// churning address set.
+	IsPrefix bool `json:"is_prefix,omitempty"`
 }
 
 // Change is a single entry in the change feed.
@@ -101,6 +118,7 @@ type Stats struct {
 	ActiveIPs       int            `json:"active_ips"`
 	TotalIPRecords  int            `json:"total_ip_records"`
 	Changes         int            `json:"changes"`
+	Parked          int            `json:"parked"`
 	ByStatus        map[Status]int `json:"by_status"`
 	LastRun         *Run           `json:"last_run"`
 }
@@ -222,18 +240,21 @@ func Family(ip string) int {
 // Stats gathers dashboard counters.
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	st := Stats{ByStatus: map[Status]int{}}
+	// Control names are not trackers, prefix records are not addresses.
 	row := s.db.QueryRowContext(ctx, `
-		SELECT (SELECT COUNT(*) FROM trackers),
-		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1),
-		       (SELECT COUNT(*) FROM ip_records WHERE active = 1),
+		SELECT (SELECT COUNT(*) FROM trackers WHERE control = 0),
+		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0),
+		       (SELECT COUNT(*) FROM ip_records WHERE active = 1 AND is_prefix = 0),
 		       (SELECT COUNT(*) FROM ip_records),
-		       (SELECT COUNT(*) FROM changes)`)
-	if err := row.Scan(&st.Trackers, &st.EnabledTrackers, &st.ActiveIPs, &st.TotalIPRecords, &st.Changes); err != nil {
+		       (SELECT COUNT(*) FROM changes),
+		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 AND parked = 1)`)
+	if err := row.Scan(&st.Trackers, &st.EnabledTrackers, &st.ActiveIPs,
+		&st.TotalIPRecords, &st.Changes, &st.Parked); err != nil {
 		return st, err
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT last_status, COUNT(*) FROM trackers WHERE enabled = 1 GROUP BY last_status`)
+		SELECT last_status, COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 GROUP BY last_status`)
 	if err != nil {
 		return st, err
 	}

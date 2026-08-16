@@ -203,12 +203,26 @@ location / {
 }
 ```
 
-Change `--addr` in the unit to `:8080` to listen on every interface instead. The
-unit runs with `ProtectSystem=strict`, an empty capability set and a
+To change the port or listen on every interface, override `ExecStart` in a
+drop-in with `sudo systemctl edit trackerd` rather than editing the installed
+unit:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/trackerd serve --addr :9090
+```
+
+The empty `ExecStart=` is required: a drop-in appends to list settings, and two
+`ExecStart` lines are an error for anything but `Type=oneshot`. Restart the
+service afterwards and check the result with `systemctl cat trackerd`.
+
+The unit runs with `ProtectSystem=strict`, an empty capability set and a
 `@system-service` syscall filter; the daemon only needs outbound DNS and HTTPS
-(for RDAP) plus its own state directory. Add
-`AmbientCapabilities=CAP_NET_BIND_SERVICE` if you point `--addr` at a port below
-1024.
+(for RDAP) plus its own state directory. A port below 1024 therefore needs
+`CAP_NET_BIND_SERVICE` in both `CapabilityBoundingSet=` and
+`AmbientCapabilities=`, which is a good reason to leave the daemon on a high
+port and let the proxy own 80 and 443.
 
 Nothing served over HTTP changes state. The API is read-only and the write paths
 live in the CLI, so a public deployment needs no authentication.

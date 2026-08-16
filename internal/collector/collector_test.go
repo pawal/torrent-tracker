@@ -552,3 +552,102 @@ func TestParkedFlagClearsWhenTheNameComesBack(t *testing.T) {
 		t.Errorf("still parked after answering with its own address: %+v", list)
 	}
 }
+
+// The end-to-end path for rolling: three runs with a changed IPv6 set, then
+// the individual addresses stop being written and a single prefix record
+// stands in for them.
+func TestRunOnceCollapsesRollingFamilyToPrefix(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := t.Context()
+	c.RollAfter = 3
+
+	tr := addTracker(t, st, "cdn.example")
+	fake.set(tr.Name, resolver.TypeA, ok("65.9.46.42"))
+
+	// A rolling family collapses onto the prefix enrichment found, so the
+	// addresses have to be annotated before any of this can happen.
+	edges := []string{
+		"2600:9000:2094:1400::1", "2600:9000:2094:3c00::1",
+		"2600:9000:2094:5c00::1", "2600:9000:2094:7600::1",
+	}
+	for _, ip := range edges {
+		err := st.PutIPInfo(ctx, store.IPInfo{
+			IP: ip, Family: 6, ASN: 16509, Prefix: "2600:9000:2094::/48",
+		}, time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The first three runs are still per-address: detection costs three runs
+	// of churn before it can tell a roller from an ordinary address change.
+	for i, ip := range edges[:3] {
+		fake.set(tr.Name, resolver.TypeAAAA, ok(ip))
+		if _, err := c.RunOnce(ctx); err != nil {
+			t.Fatalf("run %d: %v", i+1, err)
+		}
+	}
+	beforeCollapse, err := st.ChangesFor(ctx, tr.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fake.set(tr.Name, resolver.TypeAAAA, ok(edges[3]))
+	if _, err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := st.ActiveRecords(ctx, tr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v6 []store.IPRecord
+	for _, r := range records {
+		if r.Family == 6 {
+			v6 = append(v6, r)
+		}
+	}
+	if len(v6) != 1 {
+		t.Fatalf("%d active IPv6 records, want 1 prefix record: %+v", len(v6), v6)
+	}
+	if !v6[0].IsPrefix || v6[0].IP != "2600:9000:2094::/48" {
+		t.Errorf("active IPv6 record = %+v, want the /48 marked as a prefix", v6[0])
+	}
+
+	// The IPv4 side never churned, so it is untouched by any of this.
+	for _, r := range records {
+		if r.Family == 4 && (r.IsPrefix || r.IP != "65.9.46.42") {
+			t.Errorf("IPv4 record = %+v, want the address kept as-is", r)
+		}
+	}
+
+	// The collapse itself closes the old address quietly: all it should add to
+	// the feed is the prefix and the mode change, never an ip_removed.
+	changes, err := st.ChangesFor(ctx, tr.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, ch := range changes[:len(changes)-len(beforeCollapse)] {
+		counts[ch.Type]++
+	}
+	if counts[store.ChangeIPRemoved] != 0 {
+		t.Errorf("the collapse emitted %d ip_removed entries, want none", counts[store.ChangeIPRemoved])
+	}
+	if counts[store.ChangePrefixAdded] != 1 || counts[store.ChangeIPsRolling] != 1 {
+		t.Errorf("collapse change types = %v, want one prefix_added and one ips_rolling", counts)
+	}
+
+	// And once rolling, a fresh set inside the same prefix is not news at all.
+	before := len(changes)
+	fake.set(tr.Name, resolver.TypeAAAA, ok("2600:9000:2094:ff00::9"))
+	if _, err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if changes, err = st.ChangesFor(ctx, tr.ID, 100); err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != before {
+		t.Errorf("churn inside the prefix added %d change entries, want 0", len(changes)-before)
+	}
+}

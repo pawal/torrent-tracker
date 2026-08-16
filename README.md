@@ -12,6 +12,8 @@ file.
 This replaces the original Perl version (kept in `legacy/`), which diffed two
 JSON snapshots and emailed the result.
 
+A public instance runs at <https://tracker.evilbit.de/>.
+
 ## Quick start
 
 ```sh
@@ -321,3 +323,7 @@ legacy/                the original Perl implementation
 Dependencies: `codeberg.org/miekg/dns`, `modernc.org/sqlite` and
 `oschwald/maxminddb-golang`, all pure Go, so `CGO_ENABLED=0` gives a static
 binary that cross-compiles anywhere.
+
+## License
+
+BSD 2-Clause, see [LICENSE](LICENSE). Copyright 2012-2026 Patrik Wallström.

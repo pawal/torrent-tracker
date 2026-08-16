@@ -437,8 +437,8 @@ td.col-name {
 /* A content-sized table lets one 50-character hostname or AS holder widen its
    column for every row, pushing the addresses off screen. Cap the free-text
    columns and ellipsise; the full string stays in the title attribute. The
-   address columns are deliberately left alone — a clipped v6 literal is
-   useless, and those are what people came to read. */
+   address columns are deliberately left alone, since a clipped v6 literal is
+   useless and those are what people came to read. */
 .tight .col-name a,
 .tight .net-tag .asn {
   display: inline-block;

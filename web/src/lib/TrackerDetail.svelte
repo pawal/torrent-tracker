@@ -116,14 +116,14 @@
                   {#if n && (n.asn || n.org || n.as_name)}
                     <span class="asn">{describeNetwork(n)}</span>
                     {#if n.prefix}<span class="block">{n.prefix}</span>{/if}
-                  {:else}—{/if}
+                  {:else}-{/if}
                 </td>
-                <td class="muted mono">{n?.rir || '—'}</td>
+                <td class="muted mono">{n?.rir || '-'}</td>
                 <td class="net-tag">
                   {#if n?.country}
                     {flag(n.country)}
                     {n.country}{#if n.city}, {n.city}{/if}
-                  {:else}—{/if}
+                  {:else}-{/if}
                 </td>
                 <td class="muted mono nowrap">{fmtTime(r.first_seen)}</td>
                 <td class="muted mono nowrap">{fmtTime(r.last_seen)}</td>

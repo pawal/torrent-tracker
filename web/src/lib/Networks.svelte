@@ -43,7 +43,7 @@
             {#each data.networks as n (n.key)}
               <tr>
                 <td class="mono nowrap">{n.key}</td>
-                <td>{n.label || '—'}</td>
+                <td>{n.label || '-'}</td>
                 <td class="mono">{n.trackers}</td>
                 <td class="mono">{n.ips}</td>
               </tr>

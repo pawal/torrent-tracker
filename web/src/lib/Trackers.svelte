@@ -76,13 +76,13 @@
                     <span class="asn">{describeNetwork(n)}</span>
                     {#if n.rir}<span>· {n.rir}</span>{/if}
                   </span>
-                {:else}—{/each}
+                {:else}-{/each}
               </td>
               <td class="addr">
-                {#each t.ipv4 as ip (ip)}<span>{ip}</span>{:else}—{/each}
+                {#each t.ipv4 as ip (ip)}<span>{ip}</span>{:else}-{/each}
               </td>
               <td class="addr">
-                {#each t.ipv6 as ip (ip)}<span>{ip}</span>{:else}—{/each}
+                {#each t.ipv6 as ip (ip)}<span>{ip}</span>{:else}-{/each}
               </td>
               <td class="muted mono nowrap">
                 {t.last_checked_at ? fmtTime(t.last_checked_at) : 'never'}

@@ -58,7 +58,7 @@
       </div>
       {#if stats.last_run}
         <p class="sub">
-          Last collection {fmtTime(stats.last_run.started_at)} —
+          Last collection {fmtTime(stats.last_run.started_at)}:
           {stats.last_run.ok_count} resolved, {stats.last_run.error_count} failed,
           {stats.last_run.change_count} changes.
         </p>

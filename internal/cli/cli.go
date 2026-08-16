@@ -1,0 +1,540 @@
+// Package cli implements the trackerd subcommands.
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"sort"
+	"strings"
+	"syscall"
+	"text/tabwriter"
+	"time"
+
+	"github.com/pawal/torrent-tracker/internal/api"
+	"github.com/pawal/torrent-tracker/internal/collector"
+	"github.com/pawal/torrent-tracker/internal/resolver"
+	"github.com/pawal/torrent-tracker/internal/store"
+	"github.com/pawal/torrent-tracker/internal/trackerlist"
+	"github.com/pawal/torrent-tracker/web"
+)
+
+const usage = `trackerd - track the IP addresses of BitTorrent trackers over time
+
+usage: trackerd [--db PATH] <command> [flags]
+
+commands:
+  serve      run the collector and the HTTP API
+  poll       run a single collection pass and exit
+  enrich     look up AS, RIR and location for observed addresses
+  list       list known trackers
+  add        add tracker names or announce URLs
+  rm         remove a tracker (history is kept unless --purge)
+  import     import announce URLs from a file or a published list
+  changes    print the recent change feed
+  networks   summarise the networks the trackers live in
+  sources    list the built-in public tracker lists
+
+Run "trackerd <command> -h" for command flags.
+`
+
+// Main is the process entry point. It returns the exit code.
+func Main(args []string) int {
+	global := flag.NewFlagSet("trackerd", flag.ContinueOnError)
+	global.SetOutput(os.Stderr)
+	dbPath := global.String("db", defaultDB(), "path to the SQLite database")
+	verbose := global.Bool("v", false, "verbose logging")
+	global.Usage = func() {
+		fmt.Fprint(os.Stderr, usage)
+		fmt.Fprintln(os.Stderr, "\nglobal flags:")
+		global.PrintDefaults()
+	}
+
+	if err := global.Parse(args); err != nil {
+		return 2
+	}
+	rest := global.Args()
+	if len(rest) == 0 {
+		global.Usage()
+		return 2
+	}
+
+	level := slog.LevelInfo
+	if *verbose {
+		level = slog.LevelDebug
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	slog.SetDefault(log)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cmd, cmdArgs := rest[0], rest[1:]
+	run, ok := commands[cmd]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", cmd)
+		global.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	defer st.Close()
+
+	if err := run(ctx, st, log, cmdArgs); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 0
+		}
+		if errors.Is(err, flag.ErrHelp) {
+			return 2
+		}
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+type commandFunc func(context.Context, *store.Store, *slog.Logger, []string) error
+
+var commands map[string]commandFunc
+
+func init() {
+	// Assigned in init to avoid an initialisation cycle via cmdServe.
+	commands = map[string]commandFunc{
+		"serve":    cmdServe,
+		"poll":     cmdPoll,
+		"enrich":   cmdEnrich,
+		"list":     cmdList,
+		"add":      cmdAdd,
+		"rm":       cmdRemove,
+		"import":   cmdImport,
+		"changes":  cmdChanges,
+		"networks": cmdNetworks,
+		"sources":  cmdSources,
+	}
+}
+
+func defaultDB() string {
+	if v := os.Getenv("TRACKERD_DB"); v != "" {
+		return v
+	}
+	return "trackers.db"
+}
+
+// resolverFlags are shared by serve and poll.
+type resolverFlags struct {
+	servers   string
+	timeout   time.Duration
+	retries   int
+	workers   int
+	threshold int
+}
+
+func (rf *resolverFlags) register(fs *flag.FlagSet) {
+	fs.StringVar(&rf.servers, "resolver", "", "comma-separated resolvers (default: system resolvers)")
+	fs.DurationVar(&rf.timeout, "timeout", 5*time.Second, "per-query timeout")
+	fs.IntVar(&rf.retries, "retries", 1, "extra attempts per resolver after a timeout")
+	fs.IntVar(&rf.workers, "workers", 8, "concurrent lookups")
+	fs.IntVar(&rf.threshold, "miss-threshold", 2,
+		"consecutive absences before an address is retired (raise to suppress round-robin churn)")
+}
+
+// splitList turns a comma-separated flag value into a slice, dropping blanks.
+func splitList(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (rf *resolverFlags) resolver() (*resolver.DNS, error) {
+	return resolver.New(splitList(rf.servers), rf.timeout, rf.retries)
+}
+
+func (rf *resolverFlags) collector(st *store.Store, log *slog.Logger) (*collector.Collector, error) {
+	res, err := rf.resolver()
+	if err != nil {
+		return nil, err
+	}
+	log.Debug("resolver configured", "servers", res.Servers)
+	return &collector.Collector{
+		Store:         st,
+		Resolver:      res,
+		Log:           log,
+		Concurrency:   rf.workers,
+		MissThreshold: rf.threshold,
+	}, nil
+}
+
+func cmdServe(ctx context.Context, st *store.Store, log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	addr := fs.String("addr", ":8080", "listen address")
+	interval := fs.Duration("interval", time.Hour, "collection interval")
+	noCollect := fs.Bool("no-collect", false, "serve the API without running the collector")
+	var (
+		rf resolverFlags
+		ef enrichFlags
+	)
+	rf.register(fs)
+	ef.register(fs, true)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	dist, err := web.Dist()
+	if err != nil {
+		return fmt.Errorf("load embedded frontend: %w", err)
+	}
+	srv := &api.Server{Store: st, Log: log, Static: dist}
+
+	httpSrv := &http.Server{
+		Addr:              *addr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", *addr)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+		}
+	}()
+
+	if !*noCollect {
+		c, err := rf.collector(st, log)
+		if err != nil {
+			return err
+		}
+
+		if ef.enabled {
+			res, err := rf.resolver()
+			if err != nil {
+				return err
+			}
+			enricher, closeAll, err := ef.build(st, res, log)
+			if err != nil {
+				return err
+			}
+			defer closeAll()
+			// Runs straight after each collection pass, so addresses
+			// discovered this round are annotated before anyone looks.
+			c.AfterRun = func(ctx context.Context) {
+				if _, err := enricher.RunOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					log.Error("enrichment run failed", "err", err)
+				}
+			}
+		}
+
+		go func() {
+			if err := c.Run(ctx, *interval); err != nil && !errors.Is(err, context.Canceled) {
+				errCh <- err
+			}
+		}()
+	}
+
+	select {
+	case <-ctx.Done():
+		log.Info("shutting down")
+	case err := <-errCh:
+		shutdown(httpSrv)
+		return err
+	}
+	shutdown(httpSrv)
+	return nil
+}
+
+func shutdown(srv *http.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+}
+
+func cmdPoll(ctx context.Context, st *store.Store, log *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("poll", flag.ContinueOnError)
+	var rf resolverFlags
+	rf.register(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	c, err := rf.collector(st, log)
+	if err != nil {
+		return err
+	}
+	sum, err := c.RunOnce(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%d trackers, %d ok, %d failed, %d changes in %s\n",
+		sum.Trackers, sum.OK, sum.Errors, sum.Changes, sum.Duration.Round(time.Millisecond))
+	return nil
+}
+
+func cmdList(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	all := fs.Bool("all", false, "include removed trackers")
+	asJSON := fs.Bool("json", false, "output JSON")
+	namesOnly := fs.Bool("names", false, "print only hostnames")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	views, err := st.ListTrackerViews(ctx, *all)
+	if err != nil {
+		return err
+	}
+	switch {
+	case *asJSON:
+		return writeJSON(os.Stdout, views)
+	case *namesOnly:
+		for _, v := range views {
+			fmt.Println(v.Name)
+		}
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATUS\tCHECKED\tIPV4\tIPV6")
+	for _, v := range views {
+		status := string(v.LastStatus)
+		if status == "" {
+			status = "-"
+		}
+		if !v.Enabled {
+			status += " (removed)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			v.Name, status, ago(v.LastCheckedAt),
+			joinOrDash(v.IPv4), joinOrDash(v.IPv6))
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Printf("\n%d trackers\n", len(views))
+	return nil
+}
+
+func cmdAdd(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("add", flag.ContinueOnError)
+	source := fs.String("source", "manual", "note where this tracker came from")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("add: need at least one tracker name or announce URL")
+	}
+
+	now := time.Now().UTC()
+	var added, existing int
+	for _, raw := range fs.Args() {
+		host, err := trackerlist.Host(raw)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skipped %s: %v\n", raw, err)
+			continue
+		}
+		_, created, err := st.AddTracker(ctx, host, *source, now)
+		if err != nil {
+			return err
+		}
+		if created {
+			added++
+			fmt.Println("added", host)
+		} else {
+			existing++
+			fmt.Println("already known:", host)
+		}
+	}
+	fmt.Printf("\n%d added, %d already known\n", added, existing)
+	return nil
+}
+
+func cmdRemove(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+	purge := fs.Bool("purge", false, "delete the tracker and all of its history")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return errors.New("rm: need at least one tracker name")
+	}
+
+	for _, raw := range fs.Args() {
+		host, err := trackerlist.Host(raw)
+		if err != nil {
+			host = strings.ToLower(strings.TrimSpace(raw))
+		}
+		if err := st.RemoveTracker(ctx, host, *purge); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			continue
+		}
+		if *purge {
+			fmt.Println("purged", host)
+		} else {
+			fmt.Println("removed", host, "(history kept)")
+		}
+	}
+	return nil
+}
+
+func cmdImport(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	file := fs.String("file", "", "read announce URLs from this file")
+	from := fs.String("url", "", "fetch announce URLs from a URL or a built-in source name")
+	dry := fs.Bool("dry-run", false, "report what would be imported without writing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if (*file == "") == (*from == "") {
+		return errors.New("import: pass exactly one of --file or --url")
+	}
+
+	var (
+		hosts   []string
+		skipped []string
+		source  string
+		err     error
+	)
+	if *file != "" {
+		source = "file:" + *file
+		hosts, skipped, err = trackerlist.ParseFile(*file)
+	} else {
+		source = *from
+		if _, ok := trackerlist.Sources[*from]; !ok {
+			source = "url:" + *from
+		}
+		hosts, skipped, err = trackerlist.Fetch(ctx, *from)
+	}
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("parsed %d unique hostnames (%d lines skipped)\n", len(hosts), len(skipped))
+	if *dry {
+		for _, h := range hosts {
+			fmt.Println(" ", h)
+		}
+		return nil
+	}
+
+	now := time.Now().UTC()
+	var added int
+	for _, h := range hosts {
+		_, created, err := st.AddTracker(ctx, h, source, now)
+		if err != nil {
+			return err
+		}
+		if created {
+			added++
+		}
+	}
+	fmt.Printf("%d new, %d already known\n", added, len(hosts)-added)
+	return nil
+}
+
+func cmdChanges(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("changes", flag.ContinueOnError)
+	limit := fs.Int("n", 50, "how many changes to show")
+	since := fs.Duration("since", 0, "only changes within this duration (e.g. 24h)")
+	asJSON := fs.Bool("json", false, "output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var from time.Time
+	if *since > 0 {
+		from = time.Now().UTC().Add(-*since)
+	}
+	changes, err := st.RecentChanges(ctx, from, *limit)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, changes)
+	}
+	for _, c := range changes {
+		fmt.Printf("%s  %s\n", c.ObservedAt.Format(time.RFC3339), describe(c))
+	}
+	if len(changes) == 0 {
+		fmt.Println("no changes recorded")
+	}
+	return nil
+}
+
+// describe renders a change in the +/- style of the original Perl report.
+func describe(c store.Change) string {
+	switch c.Type {
+	case store.ChangeIPAdded:
+		return fmt.Sprintf("+ %s %s", c.Tracker, c.IP)
+	case store.ChangeIPRemoved:
+		return fmt.Sprintf("- %s %s", c.Tracker, c.IP)
+	case store.ChangeStatusChanged:
+		return fmt.Sprintf("! %s %s", c.Tracker, c.Detail)
+	case store.ChangeTrackerAdded:
+		return fmt.Sprintf("* %s added (%s)", c.Tracker, c.Detail)
+	default:
+		return fmt.Sprintf("? %s %s %s", c.Tracker, c.Type, c.Detail)
+	}
+}
+
+func cmdSources(_ context.Context, _ *store.Store, _ *slog.Logger, _ []string) error {
+	names := make([]string, 0, len(trackerlist.Sources))
+	for k := range trackerlist.Sources {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tURL")
+	for _, n := range names {
+		fmt.Fprintf(tw, "%s\t%s\n", n, trackerlist.Sources[n])
+	}
+	return tw.Flush()
+}
+
+func writeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func joinOrDash(v []string) string {
+	if len(v) == 0 {
+		return "-"
+	}
+	return strings.Join(v, ",")
+}
+
+func ago(t *time.Time) string {
+	if t == nil {
+		return "never"
+	}
+	d := time.Since(*t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}

@@ -1,0 +1,14 @@
+# build output
+/trackerd
+web/node_modules/
+
+# databases
+*.db
+*.db-wal
+*.db-shm
+
+# legacy Perl state
+data.json
+data.json.old
+
+.DS_Store

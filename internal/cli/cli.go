@@ -40,6 +40,8 @@ commands:
   import     import announce URLs from a file or a published list
   changes    print the recent change feed
   networks   summarise the networks the trackers live in
+  parked     list names that now resolve only to parking addresses
+  control    list or set the control names parking is judged against
   sources    list the built-in public tracker lists
 
 Run "trackerd <command> -h" for command flags.
@@ -121,6 +123,8 @@ func init() {
 		"changes":  cmdChanges,
 		"networks": cmdNetworks,
 		"sources":  cmdSources,
+		"parked":   cmdParked,
+		"control":  cmdControl,
 	}
 }
 
@@ -537,4 +541,94 @@ func ago(t *time.Time) string {
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
+}
+
+func cmdParked(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("parked", flag.ContinueOnError)
+	disable := fs.Bool("disable", false, "remove every parked tracker, keeping its history")
+	asJSON := fs.Bool("json", false, "output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	parked, err := st.ListParked(ctx)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, parked)
+	}
+	if len(parked) == 0 {
+		fmt.Println("no parked trackers")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tSTATUS\tCHECKED")
+	for _, t := range parked {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", t.Name, orDash(string(t.LastStatus)), ago(t.LastCheckedAt))
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+
+	if !*disable {
+		fmt.Printf("\n%d parked, still collecting. Use --disable to remove them.\n", len(parked))
+		return nil
+	}
+	for _, t := range parked {
+		if err := st.RemoveTracker(ctx, t.Name, false); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			continue
+		}
+	}
+	fmt.Printf("\n%d removed, history kept\n", len(parked))
+	return nil
+}
+
+func cmdControl(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("control", flag.ContinueOnError)
+	unset := fs.Bool("unset", false, "turn the names back into ordinary trackers")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() == 0 {
+		controls, err := st.ListControls(ctx)
+		if err != nil {
+			return err
+		}
+		if len(controls) == 0 {
+			fmt.Println("no control names")
+			return nil
+		}
+		for _, t := range controls {
+			fmt.Println(t.Name)
+		}
+		return nil
+	}
+
+	for _, raw := range fs.Args() {
+		host, err := trackerlist.Host(raw)
+		if err != nil {
+			host = strings.ToLower(strings.TrimSpace(raw))
+		}
+		if err := st.SetControl(ctx, host, !*unset); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			continue
+		}
+		if *unset {
+			fmt.Println("no longer a control name:", host)
+		} else {
+			fmt.Println("control name:", host)
+		}
+	}
+	return nil
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }

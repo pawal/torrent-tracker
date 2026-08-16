@@ -397,3 +397,85 @@ func TestEveryCommandIsRegistered(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// A parked name is one resolving only to addresses a control name also
+// resolves to. The collector sets the flag; the CLI is where the operator acts
+// on it, listing them first and disabling once the list looks right.
+func TestParkedListsAndDisables(t *testing.T) {
+	db := tempDB(t)
+	if code, _ := run(t, db, "add", "parked.example", "alive.example"); code != 0 {
+		t.Fatalf("add exited %d", code)
+	}
+	markParked(t, db, "parked.example")
+
+	code, out := run(t, db, "parked")
+	if code != 0 {
+		t.Fatalf("parked exited %d", code)
+	}
+	if !strings.Contains(out, "parked.example") {
+		t.Errorf("listing did not mention the parked name:\n%s", out)
+	}
+	if strings.Contains(out, "alive.example") {
+		t.Errorf("listing included a live tracker:\n%s", out)
+	}
+
+	// Listing alone must not disable anything.
+	if _, out := run(t, db, "list"); !strings.Contains(out, "parked.example") {
+		t.Errorf("listing removed the tracker by itself:\n%s", out)
+	}
+
+	if code, _ := run(t, db, "parked", "--disable"); code != 0 {
+		t.Fatalf("parked --disable exited %d", code)
+	}
+	_, out = run(t, db, "list")
+	if strings.Contains(out, "parked.example") {
+		t.Errorf("parked tracker still enabled after --disable:\n%s", out)
+	}
+	if !strings.Contains(out, "alive.example") {
+		t.Errorf("--disable took the live tracker with it:\n%s", out)
+	}
+}
+
+// markParked does what a collection pass would do on seeing a name answer with
+// nothing but parking addresses.
+func markParked(t *testing.T, db, name string) {
+	t.Helper()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	tr, err := st.TrackerByName(t.Context(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SetParked(t.Context(), tr.ID, true, "parking", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestControlMarksAndUnmarks(t *testing.T) {
+	db := tempDB(t)
+	if code, _ := run(t, db, "add", "canary.example"); code != 0 {
+		t.Fatalf("add exited %d", code)
+	}
+
+	if code, _ := run(t, db, "control", "canary.example"); code != 0 {
+		t.Fatalf("control exited %d", code)
+	}
+	if _, out := run(t, db, "control"); !strings.Contains(out, "canary.example") {
+		t.Errorf("control listing = %q, want the canary", out)
+	}
+	// A control name is resolved but is not a tracker, so it drops out here.
+	if _, out := run(t, db, "list"); strings.Contains(out, "canary.example") {
+		t.Errorf("control name still listed as a tracker:\n%s", out)
+	}
+
+	if code, _ := run(t, db, "control", "--unset", "canary.example"); code != 0 {
+		t.Fatalf("control --unset exited %d", code)
+	}
+	if _, out := run(t, db, "list"); !strings.Contains(out, "canary.example") {
+		t.Errorf("name did not come back as a tracker after --unset:\n%s", out)
+	}
+}

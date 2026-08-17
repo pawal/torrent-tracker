@@ -16,7 +16,7 @@ import (
 	"github.com/pawal/torrent-tracker/internal/store"
 )
 
-// probeFlags are shared by the probe and serve commands.
+// probeFlags are shared by the probe, poll and serve commands.
 type probeFlags struct {
 	enabled   bool
 	interval  time.Duration
@@ -29,15 +29,19 @@ type probeFlags struct {
 func (pf *probeFlags) register(fs *flag.FlagSet, withEnable bool) {
 	if withEnable {
 		fs.BoolVar(&pf.enabled, "probe", true, "check whether tracked names still answer the tracker protocol")
-		// Slower than collection on purpose: a probe is several requests per
-		// tracker and far more visible to the operator than a DNS query.
-		fs.DurationVar(&pf.interval, "probe-interval", 6*time.Hour, "how often to probe")
 	}
 	fs.DurationVar(&pf.timeout, "probe-timeout", 5*time.Second, "per-probe timeout")
 	fs.IntVar(&pf.workers, "probe-workers", 8, "trackers probed concurrently")
 	fs.IntVar(&pf.threshold, "probe-miss-threshold", 2,
 		"consecutive failures before an endpoint is called dead")
 	fs.IntVar(&pf.sample, "probe-sample", 2, "addresses probed per rolling family")
+}
+
+// registerInterval adds the scheduling flag, which only the long-running
+// serve command has any use for. Slower than collection on purpose: a probe is
+// several requests per tracker and far more visible than a DNS query.
+func (pf *probeFlags) registerInterval(fs *flag.FlagSet) {
+	fs.DurationVar(&pf.interval, "probe-interval", 6*time.Hour, "how often to probe")
 }
 
 func (pf *probeFlags) build(st *store.Store, res resolver.Resolver, log *slog.Logger) *collector.Prober {
@@ -69,13 +73,27 @@ func cmdProbe(ctx context.Context, st *store.Store, log *slog.Logger, args []str
 	if err != nil {
 		return err
 	}
+	if *asJSON {
+		sum, err := pf.build(st, res, log).RunOnce(ctx)
+		if err != nil {
+			return err
+		}
+		return writeJSON(os.Stdout, sum)
+	}
+	return runProbePass(ctx, st, log, pf, res)
+}
 
+// runProbePass probes once and prints the tally, or says why it could not.
+// Shared by probe and poll.
+func runProbePass(ctx context.Context, st *store.Store, log *slog.Logger,
+	pf probeFlags, res resolver.Resolver,
+) error {
 	cov, err := st.ProbeCoverage(ctx)
 	if err != nil {
 		return err
 	}
 	if cov.Endpoints == 0 {
-		fmt.Println("no announce endpoints on record.")
+		fmt.Println("no announce endpoints on record, nothing to probe.")
 		fmt.Println(`Re-run "trackerd import" to harvest them from a tracker list.`)
 		return nil
 	}
@@ -84,10 +102,6 @@ func cmdProbe(ctx context.Context, st *store.Store, log *slog.Logger, args []str
 	if err != nil {
 		return err
 	}
-	if *asJSON {
-		return writeJSON(os.Stdout, sum)
-	}
-
 	fmt.Printf("%d trackers probed on %d endpoints, %d probes in %s\n",
 		sum.Trackers, cov.Endpoints, sum.Probes, sum.Duration.Round(time.Millisecond))
 	fmt.Printf("%d live, %d partial, %d dead, %d unknown, %d changes\n",

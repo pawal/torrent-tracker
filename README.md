@@ -163,9 +163,12 @@ family instead of all of them.
 Only the rollup reaches the change feed — `tracker_up`, `tracker_down` and
 `tracker_partial` — because per-address transitions on a CDN-fronted name would
 flood it. The per-endpoint, per-address detail lives on the tracker page.
-Probing runs on its own clock (`--probe-interval`, default 6h) rather than
-after each collection pass: it is several requests per tracker and far more
-visible to the operator than a DNS query.
+
+`poll` probes straight after collecting, so a one-shot run works from the
+addresses it just found. Under `serve` the two run on separate clocks
+(`--probe-interval`, default 6h, against an hourly collection): probing is
+several requests per tracker and far more visible to the operator than a DNS
+query, so it does not belong on the same schedule. `--probe=false` skips it.
 
 ## Address enrichment
 
@@ -213,7 +216,7 @@ AS24940   HETZNER-AS - Hetzner Online GmbH, DE      13        19
 trackerd [--db PATH] [-v] <command>
 
   serve      run the collector and the HTTP API
-  poll       run a single collection pass and exit
+  poll       run a single collection pass, then probe   [--probe=false]
   enrich     look up AS, RIR and location    [--all --rdap=false --geoip-db P]
   probe      check which trackers still answer      [--json]
   reach      list trackers by whether they answer   [--state S --json]
@@ -245,9 +248,9 @@ to `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`,
 `--miss-threshold`, `--roll-after`, `--steady-after`. `serve` additionally
 takes `--addr`, `--interval` and `--no-collect`.
 
-Probing flags (`probe` and `serve`): `--probe-timeout`, `--probe-workers`,
-`--probe-miss-threshold`, `--probe-sample`. `serve` additionally takes
-`--probe` and `--probe-interval`.
+Probing flags (`probe`, `poll` and `serve`): `--probe-timeout`,
+`--probe-workers`, `--probe-miss-threshold`, `--probe-sample`. `poll` and
+`serve` additionally take `--probe`, and `serve` takes `--probe-interval`.
 
 ## Tracker lists
 

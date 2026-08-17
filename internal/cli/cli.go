@@ -32,7 +32,7 @@ usage: trackerd [--db PATH] <command> [flags]
 
 commands:
   serve      run the collector and the HTTP API
-  poll       run a single collection pass and exit
+  poll       run a single collection pass, then probe, and exit
   enrich     look up AS, RIR and location for observed addresses
   probe      check which trackers still answer the tracker protocol
   reach      list trackers by whether they answer
@@ -212,6 +212,7 @@ func cmdServe(ctx context.Context, st *store.Store, log *slog.Logger, args []str
 	rf.register(fs)
 	ef.register(fs, true)
 	pf.register(fs, true)
+	pf.registerInterval(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -302,8 +303,12 @@ func shutdown(srv *http.Server) {
 
 func cmdPoll(ctx context.Context, st *store.Store, log *slog.Logger, args []string) error {
 	fs := flag.NewFlagSet("poll", flag.ContinueOnError)
-	var rf resolverFlags
+	var (
+		rf resolverFlags
+		pf probeFlags
+	)
 	rf.register(fs)
+	pf.register(fs, true)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -318,7 +323,17 @@ func cmdPoll(ctx context.Context, st *store.Store, log *slog.Logger, args []stri
 	}
 	fmt.Printf("%d trackers, %d ok, %d failed, %d changes in %s\n",
 		sum.Trackers, sum.OK, sum.Errors, sum.Changes, sum.Duration.Round(time.Millisecond))
-	return nil
+
+	if !pf.enabled {
+		return nil
+	}
+	// After collection, so the probe works from the addresses this pass found.
+	res, err := rf.resolver()
+	if err != nil {
+		return err
+	}
+	fmt.Println()
+	return runProbePass(ctx, st, log, pf, res)
 }
 
 func cmdList(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {

@@ -40,6 +40,9 @@ export function describeNetwork(n) {
 // Anything absent renders as its raw signature, which still groups correctly.
 const software = {
   'no info_hash parameter supplied': 'opentracker',
+  // jpopsuki.eu answers this and sets "Server: Ocelot 1.0" — the tracker naming
+  // itself in the one header a front end had not overwritten.
+  'Malformed announce': 'Ocelot',
 }
 
 /** Name the tracker software behind a signature, or show the signature itself. */

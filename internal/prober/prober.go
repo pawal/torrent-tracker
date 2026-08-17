@@ -179,13 +179,28 @@ func (p *Prober) udpConnect(ctx context.Context, t Target) (Result, bool) {
 	return Result{State: Dead, Reason: "not a tracker reply", RTT: rtt}, false
 }
 
-// probeHTTP tries scrape (BEP 48) first, falling back to announce for the
-// trackers that never implemented scrape. A bencoded reply is the signature:
-// even a rejection comes back as a bencoded failure reason.
+// probeHTTP settles live or dead from the tracker protocol, then presses a live
+// tracker for a better fingerprint than the shape of a reply.
 func (p *Prober) probeHTTP(ctx context.Context, t Target) Result {
 	client := p.httpClient(t)
 	defer client.CloseIdleConnections()
 
+	res := p.answer(ctx, client, t)
+	// A tracker answering the question asked has no reason to name itself, and a
+	// reply shape names nobody. Refusing a request is where implementations write
+	// their own words, so ask something that has to be refused.
+	if res.State == Live && res.Kind != KindFailure {
+		if refusal := p.request(ctx, client, t, incompleteURL(t)); refusal.Kind == KindFailure {
+			res.Signature, res.Kind = refusal.Signature, refusal.Kind
+		}
+	}
+	return res
+}
+
+// answer tries scrape (BEP 48) first, falling back to announce for the trackers
+// that never implemented scrape. A bencoded reply is the proof: even a rejection
+// comes back as a bencoded failure reason.
+func (p *Prober) answer(ctx context.Context, client *http.Client, t Target) Result {
 	res := p.request(ctx, client, t, scrapeURL(t))
 	if res.State == Live && identifies(res.Signature) {
 		return res.Result
@@ -323,8 +338,19 @@ func scrapeURL(t Target) string {
 // announceURL asks for a torrent the tracker cannot know about. The expected
 // answer is a bencoded failure, which is all the proof we need.
 func announceURL(t Target) string {
-	q := url.Values{
-		"info_hash":  {strings.Repeat("\x00", 20)},
+	q := announceParams()
+	q.Set("info_hash", strings.Repeat("\x00", 20))
+	return endpointURL(t, t.Path, q.Encode())
+}
+
+// incompleteURL leaves out the one parameter every tracker requires, so the only
+// answer is a complaint in the implementation's own wording.
+func incompleteURL(t Target) string {
+	return endpointURL(t, t.Path, announceParams().Encode())
+}
+
+func announceParams() url.Values {
+	return url.Values{
 		"peer_id":    {"-TT0001-" + strings.Repeat("0", 12)},
 		"port":       {"6881"},
 		"uploaded":   {"0"},
@@ -332,7 +358,6 @@ func announceURL(t Target) string {
 		"left":       {"0"},
 		"compact":    {"1"},
 	}
-	return endpointURL(t, t.Path, q.Encode())
 }
 
 func endpointURL(t Target, p, query string) string {

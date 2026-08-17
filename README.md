@@ -225,6 +225,16 @@ name like `opentracker` lives in `software` in `web/src/lib/api.js` and is
 applied at render time — extend it there and every stored row is reinterpreted.
 Anything unnamed displays as its signature, which still groups correctly.
 
+A tracker that can answer the question asked has no reason to say who it is: the
+reply is the same handful of BEP 3 keys whoever wrote it. Implementations write
+their own words when they *refuse* something, so a live tracker that has offered
+nothing but a shape is asked once more for an announce with the `info_hash` left
+out. Of 30 names that were shape-only in the live registry, 17 disclosed a
+literal when asked, 16 endpoints of them sharing one — a cluster that had been
+scattered across several shape rows. The extra request is skipped for anything
+already named, and whatever it draws cannot change the verdict: only the
+fingerprint is taken from it.
+
 Two things stop a live HTTP tracker from being identified, and both are handled.
 Some answer scrape with their whole table rather than the `info_hash` asked
 about — one observed reply was 53MB — so only a prefix is ever read and the

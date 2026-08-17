@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -200,14 +201,27 @@ func httpTracker(t *testing.T, h http.HandlerFunc) (srv *httptest.Server, ip str
 	return srv, u.Hostname(), port
 }
 
-// Scrape is the polite check: it asks about the tracker without pretending to
-// be a peer, so it must be tried before announce, and a scrape that names the
-// software must settle the matter on its own.
+// question names which of the prober's three requests this is. Two of them share
+// the /announce path and differ only in what they leave out, so the path alone
+// cannot tell a test what was asked.
+func question(r *http.Request) string {
+	switch {
+	case r.URL.Path == "/scrape":
+		return "scrape"
+	case r.URL.Query().Has("info_hash"):
+		return "announce"
+	}
+	return "incomplete"
+}
+
+// Scrape is the polite check: it asks about the tracker without pretending to be
+// a peer, so it must be tried first, and a scrape that names the software must
+// settle the matter on its own.
 func TestProbeHTTPScrape(t *testing.T) {
-	var paths []string
+	var asked []string
 	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
-		w.Write([]byte("d5:filesde5:flagsd20:min_request_intervali36956eee"))
+		asked = append(asked, question(r))
+		w.Write([]byte("d14:failure reason28:scrape requires query stringe"))
 	})
 
 	p := &Prober{Timeout: 2 * time.Second}
@@ -217,8 +231,11 @@ func TestProbeHTTPScrape(t *testing.T) {
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
-	if len(paths) != 1 || paths[0] != "/scrape" {
-		t.Errorf("requested %v, want a single /scrape", paths)
+	if len(asked) != 1 || asked[0] != "scrape" {
+		t.Errorf("asked %v, want a single scrape", asked)
+	}
+	if got.Signature != "scrape requires query string" || got.Kind != KindFailure {
+		t.Errorf("signature = %q (%s), want the failure text", got.Signature, got.Kind)
 	}
 }
 
@@ -240,9 +257,9 @@ func TestProbeHTTPFailureReasonIsLive(t *testing.T) {
 // Plenty of trackers never implemented scrape, so a 404 there must not settle
 // the question on its own.
 func TestProbeHTTPFallsBackToAnnounce(t *testing.T) {
-	var paths []string
+	var asked []string
 	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.URL.Path)
+		asked = append(asked, question(r))
 		if r.URL.Path == "/scrape" {
 			http.NotFound(w, r)
 			return
@@ -257,8 +274,10 @@ func TestProbeHTTPFallsBackToAnnounce(t *testing.T) {
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
-	if len(paths) != 2 || paths[1] != "/announce" {
-		t.Errorf("requested %v, want /scrape then /announce", paths)
+	// The third question follows because a reply shape names nobody; it is the
+	// second that decided the tracker is alive.
+	if len(asked) < 2 || asked[0] != "scrape" || asked[1] != "announce" {
+		t.Errorf("asked %v, want scrape then announce", asked)
 	}
 }
 
@@ -312,6 +331,108 @@ func TestProbeHTTPAnnounceCannotUnseatALiveScrape(t *testing.T) {
 	}
 	if got.Signature != "files" {
 		t.Errorf("signature = %q, want the scrape's own", got.Signature)
+	}
+}
+
+// A tracker that can answer the question asked has no reason to say who it is:
+// the reply is the same handful of BEP 3 keys whoever wrote it. Refusing a
+// request is where implementations put their own words, so a live tracker with
+// nothing but a shape is asked for an announce with no info_hash. In the live
+// registry this was the difference between two dozen anonymous trackers and two
+// dozen named ones.
+func TestProbeHTTPProvokesAFailureText(t *testing.T) {
+	var asked []string
+	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, question(r))
+		if question(r) == "incomplete" {
+			w.Write([]byte("d14:failure reason37:missing required parameter: info_hashe"))
+			return
+		}
+		w.Write([]byte("d8:completei1e10:incompletei0e8:intervali1800e5:peers0:e"))
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
+	})
+	if got.State != Live {
+		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
+	}
+	if want := []string{"scrape", "incomplete"}; !slices.Equal(asked, want) {
+		t.Errorf("asked %v, want %v", asked, want)
+	}
+	if got.Signature != "missing required parameter: info_hash" || got.Kind != KindFailure {
+		t.Errorf("signature = %q (%s), want the literal the refusal disclosed",
+			got.Signature, got.Kind)
+	}
+}
+
+// A tracker that already named itself is not asked again. The extra request buys
+// nothing there, and every request is one a public tracker did not ask for.
+func TestProbeHTTPDoesNotProvokeWhenAlreadyNamed(t *testing.T) {
+	var asked []string
+	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, question(r))
+		if r.URL.Path == "/scrape" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte("d14:failure reason31:no info_hash parameter suppliede"))
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
+	})
+	if want := []string{"scrape", "announce"}; !slices.Equal(asked, want) {
+		t.Errorf("asked %v, want %v", asked, want)
+	}
+	if got.Signature != "no info_hash parameter supplied" {
+		t.Errorf("signature = %q", got.Signature)
+	}
+}
+
+// The extra question is for the fingerprint alone. Whatever it draws, the verdict
+// and the RTT belong to the request that actually spoke the tracker protocol.
+func TestProbeHTTPProvokingCannotChangeTheVerdict(t *testing.T) {
+	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
+		if question(r) == "incomplete" {
+			http.Error(w, "<html>go away</html>", http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("d8:intervali1800e5:peers0:e"))
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
+	})
+	if got.State != Live {
+		t.Errorf("state = %q (%s), want live", got.State, got.Reason)
+	}
+	if got.Signature != "interval,peers" || got.Kind != KindShape {
+		t.Errorf("signature = %q (%s), want the shape the scrape disclosed",
+			got.Signature, got.Kind)
+	}
+}
+
+// Nothing is pressed for a fingerprint it cannot have. A dead endpoint gets the
+// two questions that decide the verdict and not one more.
+func TestProbeHTTPDeadEndpointIsNotProvoked(t *testing.T) {
+	var asked []string
+	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, question(r))
+		http.NotFound(w, r)
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	if got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
+	}); got.State != Dead {
+		t.Errorf("state = %q, want dead", got.State)
+	}
+	if want := []string{"scrape", "announce"}; !slices.Equal(asked, want) {
+		t.Errorf("asked %v, want %v", asked, want)
 	}
 }
 

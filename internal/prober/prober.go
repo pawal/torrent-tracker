@@ -186,15 +186,27 @@ func (p *Prober) probeHTTP(ctx context.Context, t Target) Result {
 	defer client.CloseIdleConnections()
 
 	res := p.request(ctx, client, t, scrapeURL(t))
-	// A second request only helps when the server answered but not as a
-	// tracker: plenty of trackers never implemented scrape.
-	if res.State == Live || !res.answered {
+	if res.State == Live && identifies(res.Signature) {
 		return res.Result
 	}
-	if fallback := p.request(ctx, client, t, announceURL(t)); fallback.State == Live {
+	// A second request helps when the server answered but not as a tracker, or
+	// answered as one without disclosing which one.
+	if !res.answered {
+		return res.Result
+	}
+	fallback := p.request(ctx, client, t, announceURL(t))
+	if fallback.State == Live && (res.State != Live || identifies(fallback.Signature)) {
 		return fallback.Result
 	}
+	// A scrape that answered still proves the tracker lives, whatever announce
+	// went on to say.
 	return res.Result
+}
+
+// identifies reports whether a signature narrows down the software. A bare
+// "files" does not: BEP 48 requires that key of every scrape reply.
+func identifies(sig string) bool {
+	return sig != "" && sig != "files"
 }
 
 // httpClient dials the address we chose while presenting the hostname, so

@@ -13,11 +13,13 @@ import (
 // implementation. No tracker discloses a version.
 func signature(body []byte) string {
 	v, _, err := decode(body)
-	if err != nil {
+	// A reply the read limit cut short still shows the keys it got to, and the
+	// keys are the whole of the shape.
+	if err != nil && !errors.Is(err, errTruncated) {
 		return ""
 	}
 	d, ok := v.(bdict)
-	if !ok {
+	if !ok || len(d) == 0 {
 		return ""
 	}
 	if reason, ok := d["failure reason"].(string); ok && reason != "" {
@@ -98,19 +100,25 @@ func identifier(s string) bool {
 
 type bdict map[string]any
 
-var errBencode = errors.New("not bencoded")
+var (
+	errBencode = errors.New("not bencoded")
+	// errTruncated separates a reply the read limit cut short from one that was
+	// never bencoded. The first still shows its shape; the second shows nothing.
+	errTruncated = errors.New("bencoding cut short")
+)
 
 // decode reads one bencoded value, returning it and whatever follows. It is
 // deliberately minimal: enough to see a reply's shape, not a general decoder.
+// A dictionary cut short comes back with the keys that did arrive.
 func decode(b []byte) (any, []byte, error) {
 	if len(b) == 0 {
-		return nil, nil, errBencode
+		return nil, nil, errTruncated
 	}
 	switch c := b[0]; {
 	case c == 'i':
 		end := indexByte(b, 'e')
 		if end < 0 {
-			return nil, nil, errBencode
+			return nil, nil, errTruncated
 		}
 		n, err := strconv.ParseInt(string(b[1:end]), 10, 64)
 		if err != nil {
@@ -121,11 +129,14 @@ func decode(b []byte) (any, []byte, error) {
 	case c >= '0' && c <= '9':
 		colon := indexByte(b, ':')
 		if colon < 0 {
-			return nil, nil, errBencode
+			return nil, nil, errTruncated
 		}
 		n, err := strconv.Atoi(string(b[:colon]))
-		if err != nil || n < 0 || colon+1+n > len(b) {
+		if err != nil || n < 0 {
 			return nil, nil, errBencode
+		}
+		if colon+1+n > len(b) {
+			return nil, nil, errTruncated
 		}
 		return string(b[colon+1 : colon+1+n]), b[colon+1+n:], nil
 
@@ -140,7 +151,7 @@ func decode(b []byte) (any, []byte, error) {
 			out, rest = append(out, v), tail
 		}
 		if len(rest) == 0 {
-			return nil, nil, errBencode
+			return nil, nil, errTruncated
 		}
 		return out, rest[1:], nil
 
@@ -150,7 +161,7 @@ func decode(b []byte) (any, []byte, error) {
 		for len(rest) > 0 && rest[0] != 'e' {
 			k, tail, err := decode(rest)
 			if err != nil {
-				return nil, nil, err
+				return out, nil, err
 			}
 			key, ok := k.(string)
 			if !ok {
@@ -158,12 +169,17 @@ func decode(b []byte) (any, []byte, error) {
 			}
 			v, tail, err := decode(tail)
 			if err != nil {
-				return nil, nil, err
+				// Enough of the value to show what it was keeps the key; nothing
+				// at all drops it, unproven.
+				if v != nil {
+					out[key] = v
+				}
+				return out, nil, err
 			}
 			out[key], rest = v, tail
 		}
 		if len(rest) == 0 {
-			return nil, nil, errBencode
+			return out, nil, errTruncated
 		}
 		return out, rest[1:], nil
 	}

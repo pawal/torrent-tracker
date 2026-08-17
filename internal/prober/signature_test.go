@@ -2,7 +2,9 @@ package prober
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -36,8 +38,18 @@ func TestSignature(t *testing.T) {
 
 		{"not bencoded", "<html>404</html>", ""},
 		{"empty body", "", ""},
-		{"truncated", "d14:failure reason31:no info", ""},
 		{"a list, not a dict", "li1ee", ""},
+
+		// A value we never saw the start of proves nothing, so its key is not
+		// allowed to stand in for a signature.
+		{"truncated", "d14:failure reason31:no info", ""},
+		{"truncated before any key", "d5:fil", ""},
+		{"garbage after a good key", "d8:intervali18Xe", ""},
+
+		// But a key whose value merely ran out still shows what the value was,
+		// which is how a reply the read limit cut short keeps its shape.
+		{"scrape cut off mid-table", "d5:filesd20:\xf3\x9a\x01\xbe\x44\x7c\x28\xd0\x91\xff\x02\x5e\xa7\x13\xcc\x60\x88\x1d\xb4\x35d8:complet", "files"},
+		{"announce cut off mid-peers", "d8:completei1e8:intervali1800e5:peers12:\xac\x12\x00", "complete,interval"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -45,6 +57,40 @@ func TestSignature(t *testing.T) {
 				t.Errorf("signature(%q) = %q, want %q", tt.body, got, tt.want)
 			}
 		})
+	}
+}
+
+// The prober reads a bounded prefix of every reply, so a tracker with a long
+// enough answer used to come back live and unidentified: the shape was there in
+// the first hundred bytes, but nothing would decode. Real trackers answer
+// scrape with 50MB tables, so this was most of the unidentified ones.
+func TestSignatureSurvivesTheReadLimit(t *testing.T) {
+	var body strings.Builder
+	body.WriteString("d8:completei1e10:downloadedi0e10:incompletei9e8:intervali1800e5:peers")
+	// A peer list far past what the prober will read, so the reply is cut off
+	// inside it exactly as a real one is.
+	peers := 200 << 10
+	fmt.Fprintf(&body, "%d:%s", peers, strings.Repeat("\xac\x12\x00\x01\x1a\xe1", peers/6))
+
+	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/scrape" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write([]byte(body.String()))
+	})
+
+	p := &Prober{Timeout: 5 * time.Second}
+	got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
+	})
+	if got.State != Live {
+		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
+	}
+	// "peers" is missing because that is the key the truncation landed in; the
+	// keys ahead of it are the shape worth having.
+	if got.Signature != "complete,downloaded,incomplete,interval" {
+		t.Errorf("signature = %q, want the keys that arrived before the cut", got.Signature)
 	}
 }
 

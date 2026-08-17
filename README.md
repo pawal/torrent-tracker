@@ -209,6 +209,15 @@ name like `opentracker` lives in `software` in `web/src/lib/api.js` and is
 applied at render time — extend it there and every stored row is reinterpreted.
 Anything unnamed displays as its signature, which still groups correctly.
 
+Two things stop a live HTTP tracker from being identified, and both are handled.
+Some answer scrape with their whole table rather than the `info_hash` asked
+about — one observed reply was 53MB — so only a prefix is ever read and the
+fingerprint has to survive being cut off mid-dictionary; the keys that arrived
+are kept and the rest is discarded. And every scrape reply opens with the same
+`files` key, so a scrape whose shape amounts to nothing more than that is not an
+identification: announce is asked as well, without letting the answer overturn
+the verdict scrape already established.
+
 The `Server` header is captured alongside, but it names the front end rather
 than the tracker: nginx and Cloudflare overwrite whatever the tracker set.
 

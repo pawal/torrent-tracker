@@ -200,11 +200,14 @@ func httpTracker(t *testing.T, h http.HandlerFunc) (srv *httptest.Server, ip str
 	return srv, u.Hostname(), port
 }
 
+// Scrape is the polite check: it asks about the tracker without pretending to
+// be a peer, so it must be tried before announce, and a scrape that names the
+// software must settle the matter on its own.
 func TestProbeHTTPScrape(t *testing.T) {
 	var paths []string
 	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		w.Write([]byte("d5:filesdee"))
+		w.Write([]byte("d5:filesde5:flagsd20:min_request_intervali36956eee"))
 	})
 
 	p := &Prober{Timeout: 2 * time.Second}
@@ -214,8 +217,6 @@ func TestProbeHTTPScrape(t *testing.T) {
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
-	// Scrape is the polite check: it asks about the tracker without pretending
-	// to be a peer, so it must be tried before announce.
 	if len(paths) != 1 || paths[0] != "/scrape" {
 		t.Errorf("requested %v, want a single /scrape", paths)
 	}
@@ -258,6 +259,59 @@ func TestProbeHTTPFallsBackToAnnounce(t *testing.T) {
 	}
 	if len(paths) != 2 || paths[1] != "/announce" {
 		t.Errorf("requested %v, want /scrape then /announce", paths)
+	}
+}
+
+// Some trackers answer scrape with their entire table, tens of megabytes of it,
+// ignoring the info_hash we asked about. Every one of those replies opens with
+// the same "files" key, so the scrape proves the tracker lives and says nothing
+// about which tracker it is. Announce is where the fingerprint is.
+func TestProbeHTTPUninformativeScrapeTriesAnnounce(t *testing.T) {
+	var paths []string
+	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/scrape" {
+			w.Write([]byte("d5:filesdee"))
+			return
+		}
+		w.Write([]byte("d14:failure reason17:missing info_hashe"))
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
+	})
+	if got.State != Live {
+		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
+	}
+	if len(paths) != 2 || paths[1] != "/announce" {
+		t.Fatalf("requested %v, want /scrape then /announce", paths)
+	}
+	if got.Signature != "missing info_hash" {
+		t.Errorf("signature = %q, want the one announce disclosed", got.Signature)
+	}
+}
+
+// Chasing a better signature must never cost a verdict. A tracker whose scrape
+// works and whose announce does not is still a live tracker.
+func TestProbeHTTPAnnounceCannotUnseatALiveScrape(t *testing.T) {
+	_, ip, port := httpTracker(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/scrape" {
+			w.Write([]byte("d5:filesdee"))
+			return
+		}
+		http.Error(w, "go away", http.StatusForbidden)
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
+	})
+	if got.State != Live {
+		t.Errorf("state = %q (%s), want live", got.State, got.Reason)
+	}
+	if got.Signature != "files" {
+		t.Errorf("signature = %q, want the scrape's own", got.Signature)
 	}
 }
 

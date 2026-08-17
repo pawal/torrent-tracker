@@ -276,6 +276,65 @@ func TestNetworkSummaries(t *testing.T) {
 	}
 }
 
+// A retired tracker keeps its addresses on record, so the rollups used to count
+// names that no page will list: on the live registry that put 34 trackers into
+// the country totals, 27 of them under US alone. Clicking a country to list its
+// trackers made the gap visible, since the count and the list have to agree.
+func TestNetworkSummariesCountOnlyListedTrackers(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	live := mustAdd(t, s, "live.example.com")
+	gone := mustAdd(t, s, "gone.example.com")
+
+	seedAddr(t, s, live, "1.1.1.1", 4, base)
+	seedAddr(t, s, gone, "1.1.1.2", 4, base)
+	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.1", Family: 4, ASN: 13335, Org: "Cloudflare", RIR: "arin", Country: "US"}, base))
+	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.2", Family: 4, ASN: 13335, Org: "Cloudflare", RIR: "arin", Country: "US"}, base))
+
+	must(t, s.RemoveTracker(ctx, "gone.example.com", false))
+
+	listed, err := s.ListTrackerViews(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("got %d listed trackers, want 1", len(listed))
+	}
+
+	countries, err := s.ByCountry(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(countries) != 1 || countries[0].Key != "US" {
+		t.Fatalf("countries = %+v, want one US row", countries)
+	}
+	if countries[0].Trackers != 1 {
+		t.Errorf("US covers %d trackers, want 1: the retired name is still counted",
+			countries[0].Trackers)
+	}
+	// The address itself is still on record and still enriched; it is the
+	// tracker count that has to match what the list shows.
+	if countries[0].IPs != 1 {
+		t.Errorf("US covers %d addresses, want 1", countries[0].IPs)
+	}
+
+	nets, err := s.TopNetworks(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nets) != 1 || nets[0].Trackers != 1 {
+		t.Errorf("networks = %+v, want AS13335 on 1 tracker", nets)
+	}
+
+	rirs, err := s.ByRIR(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rirs) != 1 || rirs[0].Trackers != 1 {
+		t.Errorf("rirs = %+v, want arin on 1 tracker", rirs)
+	}
+}
+
 func TestCoverageWithUnenrichedAddresses(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

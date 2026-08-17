@@ -72,6 +72,12 @@ export function softwareTitle(s) {
   return `${s.signature}\n\ngrouped from:\n${s.variants.join('\n')}`
 }
 
+/** Served from a country: one active address is enough, as the rollup counts it. */
+export function inCountry(t, country) {
+  const want = country.toLowerCase()
+  return (t.networks ?? []).some((n) => (n.country || 'unknown').toLowerCase() === want)
+}
+
 /** Regional-indicator flag for a two-letter country code. */
 export function flag(cc) {
   if (!cc || cc.length !== 2 || !/^[A-Za-z]{2}$/.test(cc)) return ''

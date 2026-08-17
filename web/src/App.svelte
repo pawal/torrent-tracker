@@ -6,7 +6,8 @@
   import ThemeToggle from './lib/ThemeToggle.svelte'
   import { getVersion } from './lib/api.js'
 
-  // Minimal hash router: '#/', '#/trackers', '#/t/<name>'.
+  // Minimal hash router: '#/', '#/trackers', '#/t/<name>', and '?country=XX' on
+  // the tracker list so a filtered view can be linked to and gone back from.
   let hash = $state(window.location.hash || '#/')
 
   $effect(() => {
@@ -30,10 +31,12 @@
   })
 
   const route = $derived.by(() => {
-    const path = hash.replace(/^#/, '')
+    const [path, query] = hash.replace(/^#/, '').split('?')
     const detail = path.match(/^\/t\/(.+)$/)
     if (detail) return { name: 'detail', tracker: decodeURIComponent(detail[1]) }
-    if (path === '/trackers') return { name: 'trackers' }
+    if (path === '/trackers') {
+      return { name: 'trackers', country: new URLSearchParams(query).get('country') ?? '' }
+    }
     if (path === '/networks') return { name: 'networks' }
     return { name: 'dashboard' }
   })
@@ -81,7 +84,7 @@
   {#if route.name === 'detail'}
     <TrackerDetail name={route.tracker} />
   {:else if route.name === 'trackers'}
-    <Trackers />
+    <Trackers country={route.country} />
   {:else if route.name === 'networks'}
     <Networks />
   {:else}

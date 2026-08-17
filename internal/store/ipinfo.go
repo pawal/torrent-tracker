@@ -304,6 +304,11 @@ func prefixed(columns, alias string) string {
 const recordInfoJoin = `JOIN ip_info i ON (r.is_prefix = 0 AND i.ip = r.ip)
 		                     OR (r.is_prefix = 1 AND i.prefix = r.ip)`
 
+// listedScope holds a rollup to the registry every other view shows. A retired
+// name keeps its addresses, and counting it stranded the totals.
+const listedScope = `JOIN trackers t ON t.id = r.tracker_id
+		                     WHERE r.active = 1 AND t.enabled = 1 AND t.control = 0`
+
 // NetworkStat aggregates active addresses by network or registry.
 type NetworkStat struct {
 	Key      string `json:"key"`
@@ -323,7 +328,7 @@ func (s *Store) TopNetworks(ctx context.Context, limit int) ([]NetworkStat, erro
 		       COUNT(DISTINCT r.tracker_id), COUNT(DISTINCT r.ip)
 		FROM ip_records r
 		`+recordInfoJoin+`
-		WHERE r.active = 1
+		`+listedScope+`
 		GROUP BY i.asn
 		ORDER BY COUNT(DISTINCT r.tracker_id) DESC, COUNT(DISTINCT r.ip) DESC
 		LIMIT ?`, limit)
@@ -336,7 +341,7 @@ func (s *Store) ByRIR(ctx context.Context) ([]NetworkStat, error) {
 		       COUNT(DISTINCT r.tracker_id), COUNT(DISTINCT r.ip)
 		FROM ip_records r
 		`+recordInfoJoin+`
-		WHERE r.active = 1
+		`+listedScope+`
 		GROUP BY i.rir
 		ORDER BY COUNT(DISTINCT r.tracker_id) DESC`)
 }
@@ -351,7 +356,7 @@ func (s *Store) ByCountry(ctx context.Context, limit int) ([]NetworkStat, error)
 		       COUNT(DISTINCT r.tracker_id), COUNT(DISTINCT r.ip)
 		FROM ip_records r
 		`+recordInfoJoin+`
-		WHERE r.active = 1
+		`+listedScope+`
 		GROUP BY i.country
 		ORDER BY COUNT(DISTINCT r.tracker_id) DESC
 		LIMIT ?`, limit)

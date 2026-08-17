@@ -1,5 +1,8 @@
 <script>
-  import { getTrackers, fmtTime, describeNetwork, flag } from './api.js'
+  import { getTrackers, fmtTime, describeNetwork, flag, inCountry } from './api.js'
+
+  // country arrives from the URL, set by clicking a row on the networks page.
+  let { country = '' } = $props()
 
   let trackers = $state([])
   let error = $state(null)
@@ -19,10 +22,16 @@
   const rolls = (t, family) => (t.rolling ?? []).includes(family)
   const rollTitle = 'addresses change every run; the prefix is what is tracked'
 
+  // An exact match on the code, not a search: "SE" as free text hits every
+  // holder with "se" in its name.
+  const inScope = $derived(
+    country ? trackers.filter((t) => inCountry(t, country)) : trackers,
+  )
+
   const shown = $derived.by(() => {
     const q = filter.trim().toLowerCase()
-    if (!q) return trackers
-    return trackers.filter(
+    if (!q) return inScope
+    return inScope.filter(
       (t) =>
         t.name.includes(q) ||
         t.ipv4.some((ip) => ip.includes(q)) ||
@@ -41,9 +50,23 @@
 {:else}
   <div class="card">
     <h2>Known trackers</h2>
+    {#if country}
+      <p class="sub">
+        {#if country === 'unknown'}
+          Trackers whose addresses have no country on record.
+        {:else}
+          Trackers with an address in <strong>{flag(country)} {country}</strong>. One served from
+          several countries appears under each of them.
+        {/if}
+        <a href="#/trackers">Show all</a>
+      </p>
+    {/if}
     <div class="controls">
       <input type="search" bind:value={filter} placeholder="Filter by hostname or address" />
-      <span class="muted">{shown.length} of {trackers.length}</span>
+      <span class="muted">
+        {shown.length} of {inScope.length}
+        {#if country}({trackers.length} in all){/if}
+      </span>
     </div>
 
     <div class="scroll">

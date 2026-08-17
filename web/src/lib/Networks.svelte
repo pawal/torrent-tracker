@@ -137,12 +137,15 @@
 
       <div class="card">
         <h2>By country</h2>
+        <p class="sub">Pick a country to list the trackers served from it.</p>
         <table>
           <thead><tr><th>Country</th><th>Trackers</th><th>Addresses</th></tr></thead>
           <tbody>
             {#each data.countries as c (c.key)}
               <tr>
-                <td class="mono">{flag(c.key)} {c.key}</td>
+                <td class="mono">
+                  <a href="#/trackers?country={encodeURIComponent(c.key)}">{flag(c.key)} {c.key}</a>
+                </td>
                 <td class="mono">{c.trackers}</td>
                 <td class="mono">{c.ips}</td>
               </tr>

@@ -298,6 +298,10 @@ AS396982  GOOGLE-CLOUD-PLATFORM - Google LLC, US    31        4
 AS24940   HETZNER-AS - Hetzner Online GmbH, DE      13        19
 ```
 
+On the networks page each country links through to its trackers. The rollups
+count only the names the registry still lists, so the count and the list agree; a
+tracker served from several countries appears under each.
+
 ## CLI
 
 ```

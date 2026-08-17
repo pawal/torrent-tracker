@@ -22,6 +22,7 @@ type probeFlags struct {
 	interval  time.Duration
 	timeout   time.Duration
 	workers   int
+	fanout    int
 	threshold int
 	sample    int
 }
@@ -32,6 +33,7 @@ func (pf *probeFlags) register(fs *flag.FlagSet, withEnable bool) {
 	}
 	fs.DurationVar(&pf.timeout, "probe-timeout", 5*time.Second, "per-probe timeout")
 	fs.IntVar(&pf.workers, "probe-workers", 8, "trackers probed concurrently")
+	fs.IntVar(&pf.fanout, "probe-fanout", 4, "probes in flight per tracker")
 	fs.IntVar(&pf.threshold, "probe-miss-threshold", 2,
 		"consecutive failures before an endpoint is called dead")
 	fs.IntVar(&pf.sample, "probe-sample", 2, "addresses probed per rolling family")
@@ -51,6 +53,7 @@ func (pf *probeFlags) build(st *store.Store, res resolver.Resolver, log *slog.Lo
 		Resolver:        res,
 		Log:             log,
 		Concurrency:     pf.workers,
+		Fanout:          pf.fanout,
 		MissThreshold:   pf.threshold,
 		SamplePerFamily: pf.sample,
 	}

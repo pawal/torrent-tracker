@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -111,6 +112,73 @@ func TestProbeUDPSilence(t *testing.T) {
 	}
 	if got.Reason != "timed out" {
 		t.Errorf("reason = %q, want %q", got.Reason, "timed out")
+	}
+}
+
+// UDP has nothing to lean on, so a dropped datagram arrives here as silence,
+// exactly like a tracker that no longer exists. Retransmitting is what keeps
+// ordinary packet loss from spending one of an endpoint's two lives.
+func TestProbeUDPRetransmitsAfterSilence(t *testing.T) {
+	// The tracker replies from its own goroutine, so the count it keeps has to
+	// be safe to read back here.
+	var sent atomic.Int32
+	ip, port := udpTracker(t, func(req []byte) []byte {
+		if sent.Add(1) == 1 {
+			return nil
+		}
+		return connectReply(req)
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
+	if got.State != Live {
+		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
+	}
+	if n := sent.Load(); n != 2 {
+		t.Errorf("tracker saw %d requests, want 2", n)
+	}
+}
+
+// Both attempts share the one budget, so a genuinely dead endpoint costs no
+// more wall clock than it did before the retransmission existed.
+func TestProbeUDPRetransmissionStaysWithinTheTimeout(t *testing.T) {
+	ip, port := udpTracker(t, func([]byte) []byte { return nil })
+
+	p := &Prober{Timeout: 400 * time.Millisecond}
+	start := time.Now()
+	got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
+	elapsed := time.Since(start)
+
+	if got.State != Dead {
+		t.Errorf("state = %q, want dead", got.State)
+	}
+	// Generous headroom: this asserts the budget is shared rather than doubled,
+	// not that the scheduler is prompt.
+	if elapsed > 700*time.Millisecond {
+		t.Errorf("probe took %s, want it inside the 400ms timeout", elapsed.Round(time.Millisecond))
+	}
+}
+
+// An answer that proves the port is not a tracker is still an answer. Asking
+// again would only double the traffic for a verdict that will not change.
+func TestProbeUDPAnsweredIsNotRetransmitted(t *testing.T) {
+	var sent atomic.Int32
+	ip, port := udpTracker(t, func([]byte) []byte {
+		sent.Add(1)
+		out := make([]byte, 16)
+		binary.BigEndian.PutUint32(out[0:4], actionConnect)
+		binary.BigEndian.PutUint32(out[4:8], 0xdeadbeef)
+		return out
+	})
+
+	p := &Prober{Timeout: 2 * time.Second}
+	if got := p.Probe(context.Background(), Target{
+		Host: "t.example.com", IP: ip, Scheme: "udp", Port: port,
+	}); got.State != Dead {
+		t.Errorf("state = %q, want dead", got.State)
+	}
+	if n := sent.Load(); n != 1 {
+		t.Errorf("tracker saw %d requests, want 1", n)
 	}
 }
 

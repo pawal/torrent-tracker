@@ -168,6 +168,13 @@ outage cannot read as every tracker dying at once.
 consecutive failures needed before an endpoint is called dead. Trackers drop
 UDP packets and rate-limit; a single timeout proves nothing.
 
+UDP gets a second chance sooner than that. A dropped datagram is
+indistinguishable from a dead tracker, so a silent connect request is
+retransmitted once inside the same `--probe-timeout` budget — BEP 15 expects
+clients to retry, and one unlucky packet should not spend one of an endpoint's
+two lives. An answer that merely fails to be a tracker reply is not retried:
+asking twice would not change it.
+
 Rolling families are the deliberate exception to probing every address. Their
 records hold a prefix, and the addresses inside it are interchangeable and gone
 by the next round, so `--probe-sample` (default 2) addresses are probed per
@@ -296,8 +303,15 @@ to `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`,
 takes `--addr`, `--interval` and `--no-collect`.
 
 Probing flags (`probe`, `poll` and `serve`): `--probe-timeout`,
-`--probe-workers`, `--probe-miss-threshold`, `--probe-sample`. `poll` and
-`serve` additionally take `--probe`, and `serve` takes `--probe-interval`.
+`--probe-workers`, `--probe-fanout`, `--probe-miss-threshold`,
+`--probe-sample`. `poll` and `serve` additionally take `--probe`, and `serve`
+takes `--probe-interval`.
+
+`--probe-workers` (default 8) is how many trackers are probed at once;
+`--probe-fanout` (default 4) is how many of one tracker's endpoint-and-address
+pairs are probed at once, so at most 32 probes are ever in flight. Fan-out is
+bounded per tracker on purpose: a CDN-fronted name with a dozen addresses would
+otherwise see the whole set arrive as one burst and throttle us.
 
 ## Tracker lists
 

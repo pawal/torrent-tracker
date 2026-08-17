@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,14 +18,31 @@ import (
 // fakeChecker answers from a table keyed by "scheme:port ip", so a test can
 // make one address of a name work and another fail. Anything not listed is
 // treated as silent, which is the common case for a dead tracker.
+//
+// The mutex is not decoration: the real prober probes a tracker's endpoints and
+// addresses concurrently, so several goroutines land here at once. results is
+// written before a pass starts and only read during one, so it needs no guard;
+// the call log does, and so does anything a test hooks in through before.
 type fakeChecker struct {
 	results map[string]prober.Result
-	calls   []string
+	// before runs at the start of each probe, for tests that need to observe
+	// how many probes overlap.
+	before func(key string)
+
+	mu    sync.Mutex
+	calls []string
 }
 
 func (f *fakeChecker) Probe(_ context.Context, t prober.Target) prober.Result {
 	key := t.Scheme + ":" + strconv.Itoa(t.Port) + " " + t.IP
+	if f.before != nil {
+		f.before(key)
+	}
+
+	f.mu.Lock()
 	f.calls = append(f.calls, key)
+	f.mu.Unlock()
+
 	if r, ok := f.results[key]; ok {
 		return r
 	}
@@ -288,6 +306,92 @@ func TestProberNoAddressesIsUnknown(t *testing.T) {
 	}
 	if kinds := f.changeTypes(t); len(kinds) != 0 {
 		t.Errorf("changes = %v, want none", kinds)
+	}
+}
+
+// Probing per address is what makes a stale record visible, but it multiplies
+// the work per name; the fan-out is what keeps that from stretching a pass. The
+// upper bound matters as much as the overlap: a name behind a CDN that sees all
+// its addresses hit at once is a name that throttles us.
+func TestProberFanoutOverlapsProbesUpToTheBound(t *testing.T) {
+	addrs := []string{"1.2.3.4", "1.2.3.5", "1.2.3.6", "1.2.3.7", "1.2.3.8", "1.2.3.9"}
+	f := newProbeFixture(t, "tracker.example.com", addrs, [][2]any{{"udp", 6969}})
+	for _, ip := range addrs {
+		f.checker.results["udp:6969 "+ip] = live()
+	}
+	f.prober.Fanout = 3
+
+	var (
+		mu       sync.Mutex
+		inFlight int
+		peak     int
+	)
+	f.checker.before = func(string) {
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+
+		// Hold the slot long enough for the rest to pile up behind it.
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+	}
+
+	if sum := f.run(t); sum.Probes != len(addrs) {
+		t.Errorf("made %d probes, want %d", sum.Probes, len(addrs))
+	}
+	// Two rather than three: the assertion is that probes overlap, not that the
+	// scheduler starts them promptly on a loaded machine.
+	if peak < 2 {
+		t.Errorf("peak probes in flight = %d, want them to overlap", peak)
+	}
+	if peak > f.prober.Fanout {
+		t.Errorf("peak probes in flight = %d, want at most the fan-out of %d", peak, f.prober.Fanout)
+	}
+}
+
+// Running the probes concurrently must not shuffle their verdicts. Each pair
+// keeps its own result, or an endpoint inherits another address's reason and the
+// change feed names the wrong thing as broken.
+func TestProberFanoutKeepsVerdictsWithTheirTarget(t *testing.T) {
+	addrs := []string{"1.2.3.4", "1.2.3.5", "1.2.3.6", "1.2.3.7"}
+	f := newProbeFixture(t, "tracker.example.com", addrs,
+		[][2]any{{"udp", 6969}, {"https", 443}})
+	// Only udp, and only on half the addresses: eight probes, two answers.
+	answering := map[string]bool{"udp:6969 1.2.3.5": true, "udp:6969 1.2.3.7": true}
+	for key := range answering {
+		f.checker.results[key] = live()
+	}
+
+	f.run(t)
+
+	probes, err := f.store.ProbesFor(context.Background(), f.tracker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(probes) != len(addrs)*2 {
+		t.Fatalf("got %d probes, want one per endpoint and address", len(probes))
+	}
+
+	endpoints, err := f.store.EndpointsFor(context.Background(), f.tracker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheme := map[int64]string{}
+	for _, ep := range endpoints {
+		scheme[ep.ID] = ep.Scheme + ":" + strconv.Itoa(ep.Port)
+	}
+
+	for _, p := range probes {
+		key := scheme[p.EndpointID] + " " + p.IP
+		// A first silent round is unknown rather than dead, so live is the only
+		// verdict worth asserting on: it is the one that cannot be inherited.
+		if got := p.Result == store.ProbeLive; got != answering[key] {
+			t.Errorf("%s: live = %v, want %v (reason %q)", key, got, answering[key], p.Reason)
+		}
 	}
 }
 

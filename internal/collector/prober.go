@@ -28,9 +28,12 @@ type Prober struct {
 	Resolver resolver.Resolver
 	Log      *slog.Logger
 
-	// Concurrency bounds simultaneous trackers. Defaults to 8. Endpoints
-	// within one tracker are probed in series to stay polite.
+	// Concurrency bounds simultaneous trackers. Defaults to 8.
 	Concurrency int
+	// Fanout bounds simultaneous probes within one tracker. Defaults to 4:
+	// enough that many addresses do not drag out a pass, few enough to stay
+	// polite to the one host serving them.
+	Fanout int
 	// MissThreshold is the consecutive failures needed to call an endpoint
 	// dead. Defaults to 2.
 	MissThreshold int
@@ -72,6 +75,13 @@ func (p *Prober) concurrency() int {
 		return p.Concurrency
 	}
 	return 8
+}
+
+func (p *Prober) fanout() int {
+	if p.Fanout > 0 {
+		return p.Fanout
+	}
+	return 4
 }
 
 func (p *Prober) missThreshold() int {
@@ -207,20 +217,22 @@ func (p *Prober) probeOne(ctx context.Context, t store.ProbeTarget) (store.Reach
 	threshold := p.missThreshold()
 
 	ids := make([]int64, 0, len(t.Endpoints))
-	probes := make([]store.Probe, 0, len(t.Endpoints)*len(addrs))
+	jobs := make([]probeJob, 0, len(t.Endpoints)*len(addrs))
 	for _, ep := range t.Endpoints {
 		ids = append(ids, ep.ID)
 		for _, ip := range addrs {
-			if ctx.Err() != nil {
-				return "", 0, false, ctx.Err()
-			}
-			res := p.probe().Probe(ctx, prober.Target{
-				Host: t.Tracker.Name, IP: ip, Scheme: ep.Scheme, Port: ep.Port, Path: ep.Path,
+			jobs = append(jobs, probeJob{
+				key: probeKey{ep.ID, ip},
+				target: prober.Target{
+					Host: t.Tracker.Name, IP: ip, Scheme: ep.Scheme, Port: ep.Port, Path: ep.Path,
+				},
 			})
-			key := probeKey{ep.ID, ip}
-			before, seen := prev[key]
-			probes = append(probes, merge(key, ip, res, before, seen, now, threshold))
 		}
+	}
+
+	probes, err := p.runJobs(ctx, jobs, prev, now, threshold)
+	if err != nil {
+		return "", 0, false, err
 	}
 
 	if err := p.Store.PutProbes(ctx, ids, probes); err != nil {
@@ -240,6 +252,48 @@ func (p *Prober) probeOne(ctx context.Context, t store.ProbeTarget) (store.Reach
 type probeKey struct {
 	endpointID int64
 	ip         string
+}
+
+// probeJob is one endpoint on one address, the grain a probe is made at.
+type probeJob struct {
+	key    probeKey
+	target prober.Target
+}
+
+// runJobs probes a tracker's endpoints and addresses a few at a time. Verdicts
+// keep the order of the jobs, so the change feed reads the same way whichever
+// probe finishes first.
+func (p *Prober) runJobs(ctx context.Context, jobs []probeJob, prev map[probeKey]store.Probe,
+	now time.Time, threshold int,
+) ([]store.Probe, error) {
+	probes := make([]store.Probe, len(jobs))
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, p.fanout())
+	for i, job := range jobs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
+
+			res := p.probe().Probe(ctx, job.target)
+			before, seen := prev[job.key]
+			probes[i] = merge(job.key, job.key.ip, res, before, seen, now, threshold)
+		}()
+	}
+	wg.Wait()
+
+	// A cancelled pass leaves holes, and rolling those up would read as an
+	// outage.
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return probes, nil
 }
 
 // addresses lists what to probe: the tracked addresses, plus a sample from

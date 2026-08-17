@@ -58,7 +58,7 @@ type Result struct {
 
 // Prober probes endpoints. The zero value is usable.
 type Prober struct {
-	// Timeout bounds one attempt. Defaults to 5s.
+	// Timeout bounds one probe, retransmissions included. Defaults to 5s.
 	Timeout time.Duration
 	// UserAgent identifies us to HTTP trackers.
 	UserAgent string
@@ -105,16 +105,41 @@ const (
 	actionError   = 3
 )
 
-// probeUDP performs the BEP 15 connect handshake: 16 bytes out, 16 back, no
-// info_hash needed. A reply carrying our transaction id is proof of a tracker.
+// udpAttempts is how many connect requests one probe sends. A dropped datagram
+// is indistinguishable from a dead tracker, so BEP 15 has clients retransmit.
+const udpAttempts = 2
+
+// probeUDP performs the BEP 15 connect handshake, retransmitting once if the
+// first request goes unanswered.
 func (p *Prober) probeUDP(ctx context.Context, t Target) Result {
+	// Sharing one budget, so retrying costs a dead endpoint no wall clock.
+	each := p.timeout() / udpAttempts
+
+	var res Result
+	for range udpAttempts {
+		attempt, cancel := context.WithTimeout(ctx, each)
+		r, silent := p.udpConnect(attempt, t)
+		cancel()
+
+		res = r
+		if !silent {
+			break
+		}
+	}
+	return res
+}
+
+// udpConnect sends one connect request: 16 bytes out, 16 back, no info_hash
+// needed. A reply carrying our transaction id is proof of a tracker. The second
+// return marks silence, the one failure a retransmission can undo.
+func (p *Prober) udpConnect(ctx context.Context, t Target) (Result, bool) {
 	start := time.Now()
 	addr := net.JoinHostPort(t.IP, strconv.Itoa(t.Port))
 
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "udp", addr)
 	if err != nil {
-		return Result{State: Dead, Reason: dialReason(err), RTT: time.Since(start)}
+		return Result{State: Dead, Reason: dialReason(err), RTT: time.Since(start)}, false
 	}
 	defer conn.Close()
 	if deadline, ok := ctx.Deadline(); ok {
@@ -127,28 +152,30 @@ func (p *Prober) probeUDP(ctx context.Context, t Target) Result {
 	binary.BigEndian.PutUint32(req[8:12], actionConnect)
 	binary.BigEndian.PutUint32(req[12:16], txid)
 	if _, err := conn.Write(req); err != nil {
-		return Result{State: Dead, Reason: dialReason(err), RTT: time.Since(start)}
+		return Result{State: Dead, Reason: dialReason(err), RTT: time.Since(start)}, false
 	}
 
 	buf := make([]byte, 512)
 	n, err := conn.Read(buf)
 	rtt := time.Since(start)
 	if err != nil {
-		return Result{State: Dead, Reason: dialReason(err), RTT: rtt}
+		// A refusal is an answer of sorts, and asking twice will not change it.
+		return Result{State: Dead, Reason: dialReason(err), RTT: rtt}, isTimeout(err) ||
+			errors.Is(err, context.DeadlineExceeded)
 	}
 	if n < 16 {
-		return Result{State: Dead, Reason: fmt.Sprintf("short reply (%d bytes)", n), RTT: rtt}
+		return Result{State: Dead, Reason: fmt.Sprintf("short reply (%d bytes)", n), RTT: rtt}, false
 	}
 
 	// A stray datagram from something else on the port is not our answer.
 	if got := binary.BigEndian.Uint32(buf[4:8]); got != txid {
-		return Result{State: Dead, Reason: "transaction id mismatch", RTT: rtt}
+		return Result{State: Dead, Reason: "transaction id mismatch", RTT: rtt}, false
 	}
 	switch binary.BigEndian.Uint32(buf[0:4]) {
 	case actionConnect, actionError:
-		return Result{State: Live, RTT: rtt}
+		return Result{State: Live, RTT: rtt}, false
 	}
-	return Result{State: Dead, Reason: "not a tracker reply", RTT: rtt}
+	return Result{State: Dead, Reason: "not a tracker reply", RTT: rtt}, false
 }
 
 // probeHTTP tries scrape (BEP 48) first, falling back to announce for the

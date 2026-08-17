@@ -319,10 +319,25 @@ main {
   color: #991b1b;
   background: #fee2e2;
 }
-.pill.unchecked {
+.pill.unchecked,
+.pill.unknown {
   color: var(--ink-2);
   background: none;
   border: 1px solid var(--border);
+}
+/* Reachability is its own axis: a name can resolve perfectly and answer
+   nothing, so live/dead reuse the colour scale but never the status words. */
+.pill.live {
+  color: #065f46;
+  background: #d1fae5;
+}
+.pill.partial {
+  color: #92400e;
+  background: #fef3c7;
+}
+.pill.dead {
+  color: #991b1b;
+  background: #fee2e2;
 }
 /* Parked and rolling are notes about the record, not the resolver, so they
    stay muted rather than joining the status colour scale. */
@@ -361,6 +376,18 @@ main {
     color: #f87171;
     background: #2a0a0a;
   }
+  :root:not([data-theme="light"]) .pill.live {
+    color: #4ade80;
+    background: #052e16;
+  }
+  :root:not([data-theme="light"]) .pill.partial {
+    color: #fbbf24;
+    background: #2a1f0a;
+  }
+  :root:not([data-theme="light"]) .pill.dead {
+    color: #f87171;
+    background: #2a0a0a;
+  }
 }
 :root[data-theme="dark"] .pill.ok {
   color: #4ade80;
@@ -377,6 +404,18 @@ main {
 }
 :root[data-theme="dark"] .pill.nxdomain,
 :root[data-theme="dark"] .pill.error {
+  color: #f87171;
+  background: #2a0a0a;
+}
+:root[data-theme="dark"] .pill.live {
+  color: #4ade80;
+  background: #052e16;
+}
+:root[data-theme="dark"] .pill.partial {
+  color: #fbbf24;
+  background: #2a1f0a;
+}
+:root[data-theme="dark"] .pill.dead {
   color: #f87171;
   background: #2a0a0a;
 }
@@ -513,6 +552,14 @@ td.col-name {
 }
 .feed .sign.net {
   color: var(--grade-d);
+}
+/* Reachability moves in one direction or the other, so it gets the two ends
+   of the scale rather than a neutral marker. */
+.feed .sign.up {
+  color: var(--grade-a);
+}
+.feed .sign.down {
+  color: var(--grade-f);
 }
 
 /* Network annotation shown beside an address. */

@@ -11,16 +11,18 @@ import (
 // ErrNotFound is returned when a named tracker does not exist.
 var ErrNotFound = errors.New("tracker not found")
 
-const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at, control, parked`
+const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at,
+	control, parked, reach, reach_checked_at`
 
 func scanTracker(sc interface{ Scan(...any) error }) (Tracker, error) {
 	var (
-		t         Tracker
-		created   string
-		lastCheck sql.NullString
+		t          Tracker
+		created    string
+		lastCheck  sql.NullString
+		reachCheck sql.NullString
 	)
 	if err := sc.Scan(&t.ID, &t.Name, &t.Source, &t.Enabled, &created, &t.LastStatus, &lastCheck,
-		&t.Control, &t.Parked); err != nil {
+		&t.Control, &t.Parked, &t.Reach, &reachCheck); err != nil {
 		return t, err
 	}
 	var err error
@@ -28,6 +30,9 @@ func scanTracker(sc interface{ Scan(...any) error }) (Tracker, error) {
 		return t, err
 	}
 	if t.LastCheckedAt, err = parseNullTime(lastCheck); err != nil {
+		return t, err
+	}
+	if t.ReachCheckedAt, err = parseNullTime(reachCheck); err != nil {
 		return t, err
 	}
 	return t, nil

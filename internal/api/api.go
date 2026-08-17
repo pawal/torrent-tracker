@@ -155,12 +155,15 @@ func (s *Server) handleTrackers(w http.ResponseWriter, r *http.Request) {
 }
 
 // trackerDetail is the payload for a single tracker page. Info is keyed by
-// address so the UI can annotate each interval.
+// address so the UI can annotate each interval; probes reference endpoints by
+// id, since one address can answer on one endpoint and not another.
 type trackerDetail struct {
 	store.Tracker
-	Records []store.IPRecord        `json:"records"`
-	Changes []store.Change          `json:"changes"`
-	Info    map[string]store.IPInfo `json:"info"`
+	Records   []store.IPRecord        `json:"records"`
+	Changes   []store.Change          `json:"changes"`
+	Info      map[string]store.IPInfo `json:"info"`
+	Endpoints []store.Endpoint        `json:"endpoints"`
+	Probes    []store.Probe           `json:"probes"`
 }
 
 func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
@@ -190,14 +193,28 @@ func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	endpoints, err := s.Store.EndpointsFor(r.Context(), t.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	probes, err := s.Store.ProbesFor(r.Context(), t.ID)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, trackerDetail{
 		Tracker: t, Records: records, Changes: changes, Info: info,
+		Endpoints: endpoints, Probes: probes,
 	})
 }
 
-// networksResponse summarises where the tracked hosts actually live.
+// networksResponse summarises where the tracked hosts actually live, and how
+// many of them still answer.
 type networksResponse struct {
 	Coverage  store.EnrichmentCoverage `json:"coverage"`
+	Probes    store.EndpointCoverage   `json:"probes"`
+	Reach     map[store.Reach]int      `json:"reach"`
 	Networks  []store.NetworkStat      `json:"networks"`
 	RIRs      []store.NetworkStat      `json:"rirs"`
 	Countries []store.NetworkStat      `json:"countries"`
@@ -207,6 +224,16 @@ func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
 	limit := intParam(r, "limit", 20)
 
 	cov, err := s.Store.Coverage(r.Context())
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	probeCov, err := s.Store.ProbeCoverage(r.Context())
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	reach, err := s.Store.ReachSummary(r.Context())
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -227,7 +254,8 @@ func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, networksResponse{
-		Coverage: cov, Networks: networks, RIRs: rirs, Countries: countries,
+		Coverage: cov, Probes: probeCov, Reach: reach,
+		Networks: networks, RIRs: rirs, Countries: countries,
 	})
 }
 

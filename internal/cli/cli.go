@@ -34,6 +34,8 @@ commands:
   serve      run the collector and the HTTP API
   poll       run a single collection pass and exit
   enrich     look up AS, RIR and location for observed addresses
+  probe      check which trackers still answer the tracker protocol
+  reach      list trackers by whether they answer
   list       list known trackers
   add        add tracker names or announce URLs
   rm         remove a tracker (history is kept unless --purge)
@@ -116,6 +118,8 @@ func init() {
 		"serve":    cmdServe,
 		"poll":     cmdPoll,
 		"enrich":   cmdEnrich,
+		"probe":    cmdProbe,
+		"reach":    cmdReach,
 		"list":     cmdList,
 		"add":      cmdAdd,
 		"rm":       cmdRemove,
@@ -203,9 +207,11 @@ func cmdServe(ctx context.Context, st *store.Store, log *slog.Logger, args []str
 	var (
 		rf resolverFlags
 		ef enrichFlags
+		pf probeFlags
 	)
 	rf.register(fs)
 	ef.register(fs, true)
+	pf.register(fs, true)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -253,6 +259,21 @@ func cmdServe(ctx context.Context, st *store.Store, log *slog.Logger, args []str
 					log.Error("enrichment run failed", "err", err)
 				}
 			}
+		}
+
+		if pf.enabled {
+			res, err := rf.resolver()
+			if err != nil {
+				return err
+			}
+			// Its own loop, not AfterRun: probing is heavier than resolving
+			// and belongs on a slower clock.
+			p := pf.build(st, res, log)
+			go func() {
+				if err := p.Run(ctx, pf.interval); err != nil && !errors.Is(err, context.Canceled) {
+					errCh <- err
+				}
+			}()
 		}
 
 		go func() {
@@ -357,21 +378,32 @@ func cmdAdd(ctx context.Context, st *store.Store, _ *slog.Logger, args []string)
 	now := time.Now().UTC()
 	var added, existing int
 	for _, raw := range fs.Args() {
-		host, err := trackerlist.Host(raw)
+		ep, err := trackerlist.ParseEndpoint(raw)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "skipped %s: %v\n", raw, err)
 			continue
 		}
-		_, created, err := st.AddTracker(ctx, host, *source, now)
+		t, created, err := st.AddTracker(ctx, ep.Host, *source, now)
 		if err != nil {
 			return err
 		}
 		if created {
 			added++
-			fmt.Println("added", host)
+			fmt.Println("added", ep.Host)
 		} else {
 			existing++
-			fmt.Println("already known:", host)
+			fmt.Println("already known:", ep.Host)
+		}
+		// A bare hostname carries no endpoint, so it cannot be probed.
+		if !ep.Probeable() {
+			continue
+		}
+		fresh, err := st.AddEndpoint(ctx, t.ID, ep.Scheme, ep.Port, ep.Path, now)
+		if err != nil {
+			return err
+		}
+		if fresh {
+			fmt.Println("  endpoint", ep.Label())
 		}
 	}
 	fmt.Printf("\n%d added, %d already known\n", added, existing)
@@ -419,45 +451,65 @@ func cmdImport(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 	}
 
 	var (
-		hosts   []string
+		eps     []trackerlist.Endpoint
 		skipped []string
 		source  string
 		err     error
 	)
 	if *file != "" {
 		source = "file:" + *file
-		hosts, skipped, err = trackerlist.ParseFile(*file)
+		eps, skipped, err = trackerlist.ParseEndpointsFile(*file)
 	} else {
 		source = *from
 		if _, ok := trackerlist.Sources[*from]; !ok {
 			source = "url:" + *from
 		}
-		hosts, skipped, err = trackerlist.Fetch(ctx, *from)
+		eps, skipped, err = trackerlist.FetchEndpoints(ctx, *from)
 	}
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("parsed %d unique hostnames (%d lines skipped)\n", len(hosts), len(skipped))
+	hosts := trackerlist.Hosts(eps)
+	fmt.Printf("parsed %d unique hostnames on %d endpoints (%d lines skipped)\n",
+		len(hosts), len(eps), len(skipped))
 	if *dry {
-		for _, h := range hosts {
-			fmt.Println(" ", h)
+		for _, ep := range eps {
+			fmt.Println(" ", ep)
 		}
 		return nil
 	}
 
 	now := time.Now().UTC()
-	var added int
-	for _, h := range hosts {
-		_, created, err := st.AddTracker(ctx, h, source, now)
+	var added, newEndpoints int
+	ids := make(map[string]int64, len(hosts))
+	for _, ep := range eps {
+		id, known := ids[ep.Host]
+		if !known {
+			t, created, err := st.AddTracker(ctx, ep.Host, source, now)
+			if err != nil {
+				return err
+			}
+			if created {
+				added++
+			}
+			id = t.ID
+			ids[ep.Host] = id
+		}
+		// Endpoints we cannot speak to are not worth recording.
+		if !ep.Probeable() {
+			continue
+		}
+		fresh, err := st.AddEndpoint(ctx, id, ep.Scheme, ep.Port, ep.Path, now)
 		if err != nil {
 			return err
 		}
-		if created {
-			added++
+		if fresh {
+			newEndpoints++
 		}
 	}
-	fmt.Printf("%d new, %d already known\n", added, len(hosts)-added)
+	fmt.Printf("%d new, %d already known, %d new announce endpoints\n",
+		added, len(hosts)-added, newEndpoints)
 	return nil
 }
 

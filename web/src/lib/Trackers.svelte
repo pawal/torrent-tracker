@@ -51,7 +51,10 @@
         <thead>
           <tr>
             <th class="col-name">Tracker</th>
-            <th>Status</th>
+            <!-- Named for what it is. This column has only ever been the
+                 resolver's verdict, which reads as tracker health if you let
+                 it; whether the tracker answers lives on the detail page. -->
+            <th>DNS</th>
             <th>Network</th>
             <th>IPv4</th>
             <th>IPv6</th>

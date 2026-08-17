@@ -108,6 +108,65 @@ blocklist, so it survives the operator renumbering. It only catches operators a
 control name points at, though. Names parked somewhere else need `trackerd rm`,
 or promote one of them to a control name to catch the rest of its cluster.
 
+## Does it still answer?
+
+Resolving in DNS and being a tracker are different questions, and the second is
+the one people mean. Dead trackers keep their names for years, so the registry
+is full of hosts that answer every A query and no announce. There is no public
+API that will tell you whether an arbitrary hostname is a live tracker —
+newTrackon and the published lists only cover names someone submitted — so the
+check is the protocol itself:
+
+| Transport | Check | Live means |
+| --- | --- | --- |
+| **UDP** | BEP 15 connect handshake, 16 bytes each way | a reply carrying our transaction id |
+| **HTTP/HTTPS** | BEP 48 scrape, falling back to announce | a bencoded reply, including a failure reason |
+
+```sh
+trackerd probe                  # one pass over every endpoint
+trackerd reach --state partial  # the interesting ones
+```
+
+**Per address, not per name.** A probe is made for each (endpoint, address)
+pair, the same grain as enrichment. A name with four A records where one is a
+stale host reads as `partial` rather than flapping between live and dead, and
+`AAAA exists but nothing listens on it` becomes visible instead of being hidden
+by happy eyeballs. Probing by name would pick whichever address the resolver
+returned and call the question closed.
+
+**One hostname, several endpoints.** `1337.abcvg.info` serves `:80` and `:443`,
+and they can disagree. The importer now keeps the scheme, port and path it used
+to discard, so endpoints are probed separately and rolled up:
+
+```
+tracker.bt4g.com                       partial
+  http:2095   live on 4 of 4 addresses
+  https:443   live on 2 of 4 addresses
+```
+
+The same two rules that keep the address history honest apply here:
+
+**A probe that could not be made is not a failed probe.** A name that resolves
+to nothing, or a CDN answering `429`, records `unknown` and keeps whatever the
+last real measurement said. Only measured states reach the feed, so a resolver
+outage cannot read as every tracker dying at once.
+
+**One silence is not death.** `--probe-miss-threshold` (default 2) sets the
+consecutive failures needed before an endpoint is called dead. Trackers drop
+UDP packets and rate-limit; a single timeout proves nothing.
+
+Rolling families are the deliberate exception to probing every address. Their
+records hold a prefix, and the addresses inside it are interchangeable and gone
+by the next round, so `--probe-sample` (default 2) addresses are probed per
+family instead of all of them.
+
+Only the rollup reaches the change feed — `tracker_up`, `tracker_down` and
+`tracker_partial` — because per-address transitions on a CDN-fronted name would
+flood it. The per-endpoint, per-address detail lives on the tracker page.
+Probing runs on its own clock (`--probe-interval`, default 6h) rather than
+after each collection pass: it is several requests per tracker and far more
+visible to the operator than a DNS query.
+
 ## Address enrichment
 
 Every observed address is annotated with its origin AS, the RIR that allocated
@@ -156,6 +215,8 @@ trackerd [--db PATH] [-v] <command>
   serve      run the collector and the HTTP API
   poll       run a single collection pass and exit
   enrich     look up AS, RIR and location    [--all --rdap=false --geoip-db P]
+  probe      check which trackers still answer      [--json]
+  reach      list trackers by whether they answer   [--state S --json]
   list       list known trackers             [--all --json --names]
   add        add tracker names or announce URLs
   rm         remove a tracker                [--purge]
@@ -167,10 +228,12 @@ trackerd [--db PATH] [-v] <command>
   sources    list the built-in public tracker lists
 ```
 
-`add` and `import` accept full announce URLs and pull out the hostname, so you
-can paste `udp://tracker.example.com:1337/announce` straight in. IP literals and
-`.i2p` / `.onion` / `.ygg` addresses are skipped, since they have no DNS history
-to track.
+`add` and `import` accept full announce URLs, tracking the hostname and keeping
+the scheme, port and path as an endpoint to probe, so you can paste
+`udp://tracker.example.com:1337/announce` straight in. A bare hostname is
+tracked but cannot be probed, since it says nothing about how to reach the
+tracker. IP literals and `.i2p` / `.onion` / `.ygg` addresses are skipped, since
+they have no DNS history to track.
 
 `rm` disables a tracker but keeps its history, and re-adding the name brings it
 back. `--purge` deletes it and its history outright.
@@ -181,6 +244,10 @@ Collection flags (`serve` and `poll`): `--resolver` (comma-separated, defaults
 to `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`,
 `--miss-threshold`, `--roll-after`, `--steady-after`. `serve` additionally
 takes `--addr`, `--interval` and `--no-collect`.
+
+Probing flags (`probe` and `serve`): `--probe-timeout`, `--probe-workers`,
+`--probe-miss-threshold`, `--probe-sample`. `serve` additionally takes
+`--probe` and `--probe-interval`.
 
 ## Tracker lists
 
@@ -207,9 +274,9 @@ needs no authentication.
 | --- | --- |
 | `GET /api/stats` | counters and the last run |
 | `GET /api/trackers` | all trackers with their live addresses (`?all=1` includes removed) |
-| `GET /api/trackers/{name}` | one tracker with full address history, change log and per-address network info |
+| `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info and per-endpoint probe results |
 | `GET /api/changes` | the change feed (`?since=RFC3339&limit=N`) |
-| `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage |
+| `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals |
 | `GET /api/runs` | recent collection runs |
 | `GET /healthz` | liveness |
 
@@ -311,7 +378,8 @@ cmd/trackerd/          entry point
 internal/store/        SQLite schema, migrations, queries
 internal/resolver/     DNS lookups (codeberg.org/miekg/dns)
 internal/enrich/       AS/RIR/geo providers: Cymru, RDAP, MaxMind
-internal/collector/    scheduler, the pure diff engine, enrichment runner
+internal/prober/       BEP 15 and BEP 48 tracker-protocol checks
+internal/collector/    scheduler, the pure diff engine, enrichment and probe runners
 internal/api/          HTTP handlers
 internal/trackerlist/  announce-URL parsing and list fetching
 internal/cli/          subcommands

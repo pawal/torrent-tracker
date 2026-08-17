@@ -9,6 +9,25 @@
 
   const rollTitle = 'addresses change every run; the prefix is what is tracked'
 
+  // Reachability is rolled up the same way the collector does it: unknown
+  // results abstain rather than counting against the tracker.
+  function rollUp(probes) {
+    const live = probes.filter((p) => p.result === 'live').length
+    const dead = probes.filter((p) => p.result === 'dead').length
+    if (live && dead) return 'partial'
+    if (live) return 'live'
+    if (dead) return 'dead'
+    return 'unknown'
+  }
+
+  const endpoints = $derived.by(() => {
+    const probes = data?.probes ?? []
+    return (data?.endpoints ?? []).map((e) => {
+      const own = probes.filter((p) => p.endpoint_id === e.id)
+      return { ...e, probes: own, reach: rollUp(own) }
+    })
+  })
+
   $effect(() => {
     let cancelled = false
     loading = true
@@ -58,7 +77,12 @@
   <div class="card">
     <div class="detail-head">
       <h2 class="name">{data.name}</h2>
-      <span class="pill {data.last_status || 'unchecked'}">{data.last_status || 'unchecked'}</span>
+      <span class="pill {data.reach || 'unchecked'}" title="whether the tracker protocol answers">
+        {data.reach || 'unprobed'}
+      </span>
+      <span class="pill {data.last_status || 'unchecked'}" title="whether the name resolves">
+        DNS {data.last_status || 'unchecked'}
+      </span>
       {#if data.parked}
         <span class="pill parked" title="resolves only to parking addresses">parked</span>
       {/if}
@@ -66,11 +90,65 @@
     <p class="meta">
       source {data.source || 'unknown'}
       <span class="sep">·</span> added {fmtDate(data.created_at)}
-      <span class="sep">·</span> last checked
+      <span class="sep">·</span> resolved
       {data.last_checked_at ? fmtTime(data.last_checked_at) : 'never'}
+      <span class="sep">·</span> probed
+      {data.reach_checked_at ? fmtTime(data.reach_checked_at) : 'never'}
       {#if !data.enabled}<span class="sep">·</span><span class="err">removed</span>{/if}
     </p>
     <p class="sub"><a href="#/">← back to changes</a></p>
+  </div>
+
+  <div class="card">
+    <h2>Tracker protocol</h2>
+    {#if endpoints.length === 0}
+      <p class="muted">
+        No announce endpoint on record, so there is nothing to speak to. This name
+        was added bare; re-import the list it came from to pick its endpoints up.
+      </p>
+    {:else}
+      <p class="sub">
+        Whether the tracker answers, checked per address. A name can resolve
+        perfectly and answer nothing, which is why this is not the DNS status.
+      </p>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Endpoint</th>
+              <th>Address</th>
+              <th>Answers</th>
+              <th>Detail</th>
+              <th>Since</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each endpoints as e (e.id)}
+              {#each e.probes as p (p.ip)}
+                <tr>
+                  <td class="mono nowrap" title="{e.scheme}://{data.name}:{e.port}{e.path}">
+                    {e.scheme}:{e.port}
+                  </td>
+                  <td class="mono nowrap">{p.ip}</td>
+                  <td><span class="pill {p.result}">{p.result}</span></td>
+                  <td class="muted">
+                    {p.reason || (p.rtt_ms ? `${p.rtt_ms} ms` : '-')}
+                  </td>
+                  <td class="muted mono nowrap">{fmtTime(p.since)}</td>
+                </tr>
+              {:else}
+                <tr>
+                  <td class="mono nowrap">{e.scheme}:{e.port}</td>
+                  <td colspan="4" class="muted">
+                    not probed yet{data.last_status === 'ok' ? '' : ' (nothing resolved to probe)'}
+                  </td>
+                </tr>
+              {/each}
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
   </div>
 
   <div class="card">

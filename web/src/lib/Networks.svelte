@@ -13,6 +13,14 @@
       .finally(() => !cancelled && (loading = false))
     return () => (cancelled = true)
   })
+
+  // Best first here, unlike the resolution pills: the headline is how much of
+  // the registry is still alive, not what went wrong.
+  const order = ['live', 'partial', 'dead', 'unknown']
+  const reachEntries = $derived(
+    Object.entries(data?.reach ?? {}).sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])),
+  )
+  const answering = $derived((data?.reach?.live ?? 0) + (data?.reach?.partial ?? 0))
 </script>
 
 {#if error}
@@ -20,6 +28,30 @@
 {:else if loading}
   <div class="card"><p class="muted">Loading…</p></div>
 {:else}
+  <div class="card">
+    <h2>Tracker reachability</h2>
+    <p class="sub">
+      {answering} of {data.probes.trackers} names answer the tracker protocol, across
+      {data.probes.endpoints} announce endpoints on {data.probes.with_endpoints} names.
+      Resolving in DNS is a separate question, and a good deal more of them manage that.
+    </p>
+    {#if reachEntries.length}
+      <div class="pill-row">
+        {#each reachEntries as [state, n] (state)}
+          <span class="pill {state}">{state}<span class="count">{n}</span></span>
+        {/each}
+      </div>
+    {/if}
+    {#if data.probes.probed === 0}
+      <p class="muted">Run <code>trackerd probe</code> to populate this.</p>
+    {:else if data.probes.with_endpoints < data.probes.trackers}
+      <p class="muted">
+        {data.probes.trackers - data.probes.with_endpoints} names were added without an
+        announce endpoint and cannot be probed; they count as unknown.
+      </p>
+    {/if}
+  </div>
+
   <div class="card">
     <h2>Enrichment coverage</h2>
     <p class="sub">

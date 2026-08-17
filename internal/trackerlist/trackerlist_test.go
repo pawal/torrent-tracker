@@ -71,6 +71,102 @@ func TestHostRejects(t *testing.T) {
 	}
 }
 
+func TestParseEndpoint(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want Endpoint
+	}{
+		{"udp announce", "udp://tracker.example.com:1337/announce",
+			Endpoint{"tracker.example.com", "udp", 1337, "/announce"}},
+		// A port-less announce URL still has to be probed somewhere; these are
+		// the conventional ports for each transport.
+		{"udp without a port", "udp://open.demonii.com/announce",
+			Endpoint{"open.demonii.com", "udp", 6969, "/announce"}},
+		{"https without a port", "https://tracker.example.com/announce",
+			Endpoint{"tracker.example.com", "https", 443, "/announce"}},
+		{"http without a port", "http://tracker.example.com/announce",
+			Endpoint{"tracker.example.com", "http", 80, "/announce"}},
+		{"php announce path", "http://bigfangroup.org/announce.php",
+			Endpoint{"bigfangroup.org", "http", 80, "/announce.php"}},
+		{"no path at all", "udp://tracker.example.com:6969",
+			Endpoint{"tracker.example.com", "udp", 6969, "/announce"}},
+		{"uppercase is normalised", "UDP://Tracker.EXAMPLE.com:80/announce",
+			Endpoint{"tracker.example.com", "udp", 80, "/announce"}},
+		// A bare hostname states no transport, so none is invented for it.
+		{"bare hostname", "tracker.example.com",
+			Endpoint{"tracker.example.com", "", 0, "/announce"}},
+		{"websocket", "ws://tracker.example.com:80/announce",
+			Endpoint{"tracker.example.com", "ws", 80, "/announce"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseEndpoint(tt.in)
+			if err != nil {
+				t.Fatalf("ParseEndpoint(%q) returned error: %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Errorf("ParseEndpoint(%q) = %+v, want %+v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// Only the transports the prober actually speaks are worth recording; the rest
+// would sit in the endpoints table forever as unprobed rows.
+func TestEndpointProbeable(t *testing.T) {
+	probeable := []string{
+		"udp://tracker.example.com:6969/announce",
+		"http://tracker.example.com/announce",
+		"https://tracker.example.com/announce",
+	}
+	for _, raw := range probeable {
+		ep, err := ParseEndpoint(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ep.Probeable() {
+			t.Errorf("%q should be probeable", raw)
+		}
+	}
+
+	notProbeable := []string{
+		"ws://tracker.example.com:80/announce",
+		"wss://tracker.example.com/announce",
+		"tracker.example.com",
+	}
+	for _, raw := range notProbeable {
+		ep, err := ParseEndpoint(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ep.Probeable() {
+			t.Errorf("%q should not be probeable, got %+v", raw, ep)
+		}
+	}
+}
+
+// One hostname serving several endpoints is the case the whole per-endpoint
+// model exists for, so parsing must keep them apart.
+func TestParseEndpointsKeepsSiblings(t *testing.T) {
+	const list = `
+http://1337.abcvg.info:80/announce
+https://1337.abcvg.info:443/announce
+udp://1337.abcvg.info:80/announce
+http://1337.abcvg.info:80/announce
+`
+	eps, _, err := ParseEndpoints(strings.NewReader(list))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eps) != 3 {
+		t.Fatalf("got %d endpoints, want 3 (the duplicate line collapses)", len(eps))
+	}
+	if hosts := Hosts(eps); len(hosts) != 1 || hosts[0] != "1337.abcvg.info" {
+		t.Errorf("hosts = %v, want the one name", hosts)
+	}
+}
+
 const sample = `
 udp://tracker.example.com:1337/announce
 http://tracker.example.com:6969/announce

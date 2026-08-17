@@ -56,6 +56,13 @@ const (
 	ChangeIPsStable  = "ips_stable"
 	// ChangeParked marks a name as no longer a tracker but a parked domain.
 	ChangeParked = "parked"
+	// ChangeTrackerUp, ChangeTrackerDown and ChangeTrackerPartial record the
+	// tracker protocol answering or falling silent, which is a different fact
+	// from the name resolving. Only the rollup reaches the feed: a rolling
+	// family would flood it with per-address transitions.
+	ChangeTrackerUp      = "tracker_up"
+	ChangeTrackerDown    = "tracker_down"
+	ChangeTrackerPartial = "tracker_partial"
 )
 
 // Tracker is a known tracker hostname.
@@ -71,6 +78,10 @@ type Tracker struct {
 	Control bool `json:"control,omitempty"`
 	// Parked marks a name that now resolves only to parking addresses.
 	Parked bool `json:"parked,omitempty"`
+	// Reach is how much of the tracker answers the protocol, as opposed to
+	// LastStatus, which only says whether the name resolves.
+	Reach          Reach      `json:"reach,omitempty"`
+	ReachCheckedAt *time.Time `json:"reach_checked_at,omitempty"`
 }
 
 // IPRecord is one contiguous period during which an address was observed.
@@ -120,6 +131,7 @@ type Stats struct {
 	Changes         int            `json:"changes"`
 	Parked          int            `json:"parked"`
 	ByStatus        map[Status]int `json:"by_status"`
+	ByReach         map[Reach]int  `json:"by_reach"`
 	LastRun         *Run           `json:"last_run"`
 }
 
@@ -271,6 +283,10 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 		st.ByStatus[status] = n
 	}
 	if err := rows.Err(); err != nil {
+		return st, err
+	}
+
+	if st.ByReach, err = s.ReachSummary(ctx); err != nil {
 		return st, err
 	}
 

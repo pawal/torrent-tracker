@@ -67,6 +67,12 @@ export function describe(c) {
       return { sign: '~', cls: 'net', text: `IPv${c.family} ${c.detail}` }
     case 'parked':
       return { sign: '!', cls: 'status', text: c.detail || 'parked' }
+    case 'tracker_up':
+      return { sign: '↑', cls: 'up', text: `answering again — ${c.detail}` }
+    case 'tracker_down':
+      return { sign: '↓', cls: 'down', text: `stopped answering — ${c.detail}` }
+    case 'tracker_partial':
+      return { sign: '~', cls: 'down', text: `partly answering — ${c.detail}` }
     default:
       return { sign: '?', cls: '', text: `${c.type} ${c.detail ?? ''}` }
   }

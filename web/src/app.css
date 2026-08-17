@@ -204,7 +204,8 @@ button:disabled {
   cursor: not-allowed;
 }
 
-.theme-toggle {
+.theme-toggle,
+.icon-link {
   background: none;
   border: 1px solid var(--border);
   color: var(--muted);
@@ -214,10 +215,19 @@ button:disabled {
   line-height: 1;
   flex-shrink: 0;
 }
-.theme-toggle:hover:not(:disabled) {
+.theme-toggle:hover:not(:disabled),
+.icon-link:hover {
   background: var(--surface);
   color: var(--ink);
   transform: none;
+  text-decoration: none;
+}
+/* Matches the toggle's box, but an anchor needs the centring a button gets
+   for free. */
+.icon-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 11px;
 }
 
 /* --- layout ------------------------------------------------------------ */

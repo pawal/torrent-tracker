@@ -180,6 +180,53 @@ func TestImportFile(t *testing.T) {
 	}
 }
 
+// Existing deployments need endpoints backfilled without their curation being
+// undone: a plain import re-enables every name it names, which would resurrect
+// the trackers that were removed for being dead or parked.
+func TestImportEndpointsOnlyLeavesTheRegistryAlone(t *testing.T) {
+	db := tempDB(t)
+	list := filepath.Join(t.TempDir(), "list.txt")
+	body := strings.Join([]string{
+		"udp://kept.example.com:6969/announce",
+		"https://kept.example.com/announce",
+		"udp://removed.example.com:6969/announce",
+		"udp://neverseen.example.com:6969/announce",
+	}, "\n")
+	if err := os.WriteFile(list, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare hostnames carry no endpoint, which is the state an older database
+	// is in before this backfill.
+	run(t, db, "add", "kept.example.com", "removed.example.com")
+	run(t, db, "rm", "removed.example.com")
+
+	code, out := run(t, db, "import", "--file", list, "--endpoints-only")
+	if code != 0 {
+		t.Fatalf("import = %d: %s", code, out)
+	}
+	if !strings.Contains(out, "1 of 3 hostnames are not in the registry") {
+		t.Errorf("output = %q, want the unknown hostname reported", out)
+	}
+
+	_, names := run(t, db, "list", "--names")
+	if strings.Contains(names, "removed.example.com") {
+		t.Errorf("a removed tracker was brought back:\n%s", names)
+	}
+	if strings.Contains(names, "neverseen.example.com") {
+		t.Errorf("a hostname absent from the registry was added:\n%s", names)
+	}
+	if !strings.Contains(names, "kept.example.com") {
+		t.Errorf("the surviving tracker went missing:\n%s", names)
+	}
+
+	// The point of the exercise: the kept name can now be probed.
+	_, probe := run(t, db, "probe", "--probe-timeout", "10ms")
+	if !strings.Contains(probe, "on 2 endpoints") {
+		t.Errorf("probe = %q, want both of the kept name's endpoints attached", probe)
+	}
+}
+
 func TestImportDryRunWritesNothing(t *testing.T) {
 	db := tempDB(t)
 	list := filepath.Join(t.TempDir(), "list.txt")

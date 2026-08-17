@@ -127,6 +127,19 @@ trackerd probe                  # one pass over every endpoint
 trackerd reach --state partial  # the interesting ones
 ```
 
+A database from before this existed has no endpoints, and `probe` will say so.
+Backfill them with `--endpoints-only`, which attaches endpoints to names the
+registry already has and nothing else:
+
+```sh
+trackerd import --file list.txt --endpoints-only
+```
+
+Use that rather than a plain import on a curated registry. Importing re-enables
+every name in the list, which is what you want when adding trackers and exactly
+what you do not want here: it would resurrect the names you removed for being
+dead or parked.
+
 **Per address, not per name.** A probe is made for each (endpoint, address)
 pair, the same grain as enrichment. A name with four A records where one is a
 stale host reads as `partial` rather than flapping between live and dead, and
@@ -223,7 +236,8 @@ trackerd [--db PATH] [-v] <command>
   list       list known trackers             [--all --json --names]
   add        add tracker names or announce URLs
   rm         remove a tracker                [--purge]
-  import     import announce URLs            [--file PATH | --url SRC] [--dry-run]
+  import     import announce URLs            [--file PATH | --url SRC]
+                                             [--dry-run --endpoints-only]
   changes    print the recent change feed    [-n N --since 24h --json]
   networks   summarise networks, RIRs and countries [-n N --json]
   parked     list names that resolve only to parking [--disable --json]

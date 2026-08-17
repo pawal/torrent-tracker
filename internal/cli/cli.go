@@ -458,6 +458,8 @@ func cmdImport(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 	file := fs.String("file", "", "read announce URLs from this file")
 	from := fs.String("url", "", "fetch announce URLs from a URL or a built-in source name")
 	dry := fs.Bool("dry-run", false, "report what would be imported without writing")
+	onlyEndpoints := fs.Bool("endpoints-only", false,
+		"only attach announce endpoints to known trackers, adding and re-enabling nothing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -496,23 +498,38 @@ func cmdImport(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 	}
 
 	now := time.Now().UTC()
-	var added, newEndpoints int
+	var added, newEndpoints, unknown int
+	// A zero id marks a hostname the registry does not have and, under
+	// --endpoints-only, is not going to get.
 	ids := make(map[string]int64, len(hosts))
+
 	for _, ep := range eps {
-		id, known := ids[ep.Host]
-		if !known {
-			t, created, err := st.AddTracker(ctx, ep.Host, source, now)
-			if err != nil {
-				return err
+		id, seen := ids[ep.Host]
+		if !seen {
+			if *onlyEndpoints {
+				t, err := st.TrackerByName(ctx, ep.Host)
+				switch {
+				case errors.Is(err, store.ErrNotFound):
+					unknown++
+				case err != nil:
+					return err
+				default:
+					id = t.ID
+				}
+			} else {
+				t, created, err := st.AddTracker(ctx, ep.Host, source, now)
+				if err != nil {
+					return err
+				}
+				if created {
+					added++
+				}
+				id = t.ID
 			}
-			if created {
-				added++
-			}
-			id = t.ID
 			ids[ep.Host] = id
 		}
 		// Endpoints we cannot speak to are not worth recording.
-		if !ep.Probeable() {
+		if id == 0 || !ep.Probeable() {
 			continue
 		}
 		fresh, err := st.AddEndpoint(ctx, id, ep.Scheme, ep.Port, ep.Path, now)
@@ -522,6 +539,12 @@ func cmdImport(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 		if fresh {
 			newEndpoints++
 		}
+	}
+
+	if *onlyEndpoints {
+		fmt.Printf("%d new announce endpoints; %d of %d hostnames are not in the registry and were left alone\n",
+			newEndpoints, unknown, len(hosts))
+		return nil
 	}
 	fmt.Printf("%d new, %d already known, %d new announce endpoints\n",
 		added, len(hosts)-added, newEndpoints)

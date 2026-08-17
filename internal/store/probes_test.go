@@ -308,6 +308,54 @@ func TestReachSummaryCountsNeverProbedAsUnknown(t *testing.T) {
 	}
 }
 
+func TestSoftwareStats(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	const opentracker = "no info_hash parameter supplied"
+	for _, tc := range []struct {
+		name string
+		sig  string
+	}{
+		{"a.example.com", opentracker},
+		{"b.example.com", opentracker},
+		{"c.example.com", "missing info_hash"},
+		{"udponly.example.com", ""}, // UDP discloses nothing
+	} {
+		_, endpointID := newTrackerWithEndpoint(t, s, tc.name)
+		p := probeAt(endpointID, "1.2.3.4", ProbeLive, now)
+		p.Signature = tc.sig
+		if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.SoftwareStats(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Most common first, and the unfingerprintable tracker is absent rather
+	// than lumped into an empty bucket.
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2: %+v", len(got), got)
+	}
+	if got[0].Signature != opentracker || got[0].Trackers != 2 {
+		t.Errorf("row 0 = %+v, want %q on 2 trackers", got[0], opentracker)
+	}
+	if got[1].Trackers != 1 {
+		t.Errorf("row 1 = %+v, want 1 tracker", got[1])
+	}
+
+	cov, err := s.ProbeCoverage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cov.Identified != 3 || cov.Trackers != 4 {
+		t.Errorf("coverage = %d identified of %d, want 3 of 4", cov.Identified, cov.Trackers)
+	}
+}
+
 // Trackers added as bare hostnames have nothing to speak to and must not be
 // mistaken for silent ones.
 func TestProbeTargetsSkipsTrackersWithoutEndpoints(t *testing.T) {

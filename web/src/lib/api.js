@@ -35,6 +35,19 @@ export function describeNetwork(n) {
   return parts.join(' ')
 }
 
+// Signatures we can put a name to. Kept out of the database because naming a
+// cluster is a guess: revise this and every stored row is reinterpreted.
+// Anything absent renders as its raw signature, which still groups correctly.
+const software = {
+  'no info_hash parameter supplied': 'opentracker',
+}
+
+/** Name the tracker software behind a signature, or show the signature itself. */
+export function describeSoftware(signature) {
+  if (!signature) return ''
+  return software[signature] ?? signature
+}
+
 /** Regional-indicator flag for a two-letter country code. */
 export function flag(cc) {
   if (!cc || cc.length !== 2 || !/^[A-Za-z]{2}$/.test(cc)) return ''

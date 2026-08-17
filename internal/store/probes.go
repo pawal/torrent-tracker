@@ -56,6 +56,10 @@ type Probe struct {
 	MissCount  int         `json:"-"`
 	Since      time.Time   `json:"since"`
 	CheckedAt  time.Time   `json:"checked_at"`
+	// Signature fingerprints the tracker software, Server the front end. HTTP
+	// only: BEP 15 carries neither.
+	Signature string `json:"signature,omitempty"`
+	Server    string `json:"server,omitempty"`
 }
 
 // RollUp reduces per-address probe results to one verdict for the name.
@@ -152,7 +156,7 @@ func (s *Store) EndpointsFor(ctx context.Context, trackerID int64) ([]Endpoint, 
 func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT p.endpoint_id, p.ip, p.family, p.result, p.reason, p.rtt_ms,
-		       p.miss_count, p.since, p.checked_at
+		       p.miss_count, p.since, p.checked_at, p.signature, p.server
 		FROM probes p JOIN endpoints e ON e.id = p.endpoint_id
 		WHERE e.tracker_id = ?
 		ORDER BY e.scheme, e.port, p.family, p.ip`, trackerID)
@@ -168,7 +172,7 @@ func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error)
 			since, checked string
 		)
 		if err := rows.Scan(&p.EndpointID, &p.IP, &p.Family, &p.Result, &p.Reason,
-			&p.RTTms, &p.MissCount, &since, &checked); err != nil {
+			&p.RTTms, &p.MissCount, &since, &checked, &p.Signature, &p.Server); err != nil {
 			return nil, err
 		}
 		var err error
@@ -200,13 +204,15 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 		keep[p.EndpointID][p.IP] = true
 
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO probes (endpoint_id, ip, family, result, reason, rtt_ms, miss_count, since, checked_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO probes (endpoint_id, ip, family, result, reason, rtt_ms, miss_count,
+			                    since, checked_at, signature, server)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (endpoint_id, ip) DO UPDATE SET
 				result = excluded.result, reason = excluded.reason, rtt_ms = excluded.rtt_ms,
-				miss_count = excluded.miss_count, since = excluded.since, checked_at = excluded.checked_at`,
+				miss_count = excluded.miss_count, since = excluded.since, checked_at = excluded.checked_at,
+				signature = excluded.signature, server = excluded.server`,
 			p.EndpointID, p.IP, p.Family, p.Result, p.Reason, p.RTTms, p.MissCount,
-			fmtTime(p.Since), fmtTime(p.CheckedAt)); err != nil {
+			fmtTime(p.Since), fmtTime(p.CheckedAt), p.Signature, p.Server); err != nil {
 			return fmt.Errorf("store probe %d/%s: %w", p.EndpointID, p.IP, err)
 		}
 	}
@@ -304,6 +310,9 @@ type EndpointCoverage struct {
 	WithEndpoints int `json:"with_endpoints"`
 	Endpoints     int `json:"endpoints"`
 	Probed        int `json:"probed"`
+	// Identified is how many trackers gave up a software signature. Far fewer
+	// than Probed: UDP discloses nothing, and a dead endpoint says nothing.
+	Identified int `json:"identified"`
 }
 
 // ProbeCoverage separates "not probed yet" from "probed and dead", which the
@@ -319,9 +328,50 @@ func (s *Store) ProbeCoverage(ctx context.Context) (EndpointCoverage, error) {
 		          JOIN trackers t ON t.id = e.tracker_id
 		         WHERE t.enabled = 1 AND t.control = 0),
 		       (SELECT COUNT(*) FROM trackers
-		         WHERE enabled = 1 AND control = 0 AND reach_checked_at IS NOT NULL)`).
-		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed)
+		         WHERE enabled = 1 AND control = 0 AND reach_checked_at IS NOT NULL),
+		       (SELECT COUNT(DISTINCT e.tracker_id) FROM probes p
+		          JOIN endpoints e ON e.id = p.endpoint_id
+		          JOIN trackers t ON t.id = e.tracker_id
+		         WHERE t.enabled = 1 AND t.control = 0 AND p.signature != '')`).
+		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed, &c.Identified)
 	return c, err
+}
+
+// SoftwareStat is one signature and how much of the registry shows it.
+type SoftwareStat struct {
+	Signature string `json:"signature"`
+	Trackers  int    `json:"trackers"`
+	Endpoints int    `json:"endpoints"`
+}
+
+// SoftwareStats groups the registry by tracker software, most common first.
+func (s *Store) SoftwareStats(ctx context.Context, limit int) ([]SoftwareStat, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 25
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.signature, COUNT(DISTINCT e.tracker_id), COUNT(DISTINCT p.endpoint_id)
+		FROM probes p
+		JOIN endpoints e ON e.id = p.endpoint_id
+		JOIN trackers t ON t.id = e.tracker_id
+		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''
+		GROUP BY p.signature
+		ORDER BY COUNT(DISTINCT e.tracker_id) DESC, p.signature
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []SoftwareStat{}
+	for rows.Next() {
+		var st SoftwareStat
+		if err := rows.Scan(&st.Signature, &st.Trackers, &st.Endpoints); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
 }
 
 // ProbeTarget is one tracker's probing work: its endpoints and the addresses

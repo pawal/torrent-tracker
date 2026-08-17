@@ -218,6 +218,7 @@ type networksResponse struct {
 	Networks  []store.NetworkStat      `json:"networks"`
 	RIRs      []store.NetworkStat      `json:"rirs"`
 	Countries []store.NetworkStat      `json:"countries"`
+	Software  []store.SoftwareStat     `json:"software"`
 }
 
 func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
@@ -253,9 +254,14 @@ func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	software, err := s.Store.SoftwareStats(r.Context(), limit)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, networksResponse{
 		Coverage: cov, Probes: probeCov, Reach: reach,
-		Networks: networks, RIRs: rirs, Countries: countries,
+		Networks: networks, RIRs: rirs, Countries: countries, Software: software,
 	})
 }
 

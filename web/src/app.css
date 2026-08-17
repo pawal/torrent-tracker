@@ -347,6 +347,14 @@ main {
   border: 1px dashed var(--border);
   margin-left: 4px;
 }
+/* Software is inferred from the shape of a reply, not measured, so it must not
+   read with the authority of an AS number. */
+.pill.guess {
+  color: var(--muted);
+  background: none;
+  border: 1px dashed var(--border);
+  font-weight: 400;
+}
 .rolling {
   display: inline-block;
   margin-left: 6px;

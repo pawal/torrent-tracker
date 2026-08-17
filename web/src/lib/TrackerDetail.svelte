@@ -1,5 +1,7 @@
 <script>
-  import { getTracker, describe, fmtTime, fmtDate, describeNetwork, flag } from './api.js'
+  import {
+    getTracker, describe, fmtTime, fmtDate, describeNetwork, describeSoftware, flag,
+  } from './api.js'
 
   let { name } = $props()
 
@@ -27,6 +29,14 @@
       return { ...e, probes: own, reach: rollUp(own) }
     })
   })
+
+  const unique = (xs) => [...new Set(xs.filter(Boolean))]
+
+  // Every endpoint of a healthy tracker reports the same software, so it is
+  // stated once. Disagreement is the finding, and only then goes per row.
+  const software = $derived(unique((data?.probes ?? []).map((p) => p.signature)))
+  const servers = $derived(unique((data?.probes ?? []).map((p) => p.server)))
+  const mixedSoftware = $derived(software.length > 1)
 
   $effect(() => {
     let cancelled = false
@@ -100,7 +110,19 @@
   </div>
 
   <div class="card">
-    <h2>Tracker protocol</h2>
+    <div class="detail-head">
+      <h2>Tracker protocol</h2>
+      {#if !mixedSoftware && software[0]}
+        <span class="pill guess" title="inferred from the reply: {software[0]}">
+          {describeSoftware(software[0])}
+        </span>
+      {/if}
+      {#each servers as s (s)}
+        <span class="pill guess" title="HTTP Server header — the front end, not the tracker">
+          {s}
+        </span>
+      {/each}
+    </div>
     {#if endpoints.length === 0}
       <p class="muted">
         No announce endpoint on record, so there is nothing to speak to. This name
@@ -118,6 +140,7 @@
               <th>Endpoint</th>
               <th>Address</th>
               <th>Answers</th>
+              {#if mixedSoftware}<th>Software</th>{/if}
               <th>Detail</th>
               <th>Since</th>
             </tr>
@@ -131,6 +154,11 @@
                   </td>
                   <td class="mono nowrap">{p.ip}</td>
                   <td><span class="pill {p.result}">{p.result}</span></td>
+                  {#if mixedSoftware}
+                    <td class="muted" title={p.signature}>
+                      {describeSoftware(p.signature) || '-'}
+                    </td>
+                  {/if}
                   <td class="muted">
                     {p.reason || (p.rtt_ms ? `${p.rtt_ms} ms` : '-')}
                   </td>
@@ -139,7 +167,7 @@
               {:else}
                 <tr>
                   <td class="mono nowrap">{e.scheme}:{e.port}</td>
-                  <td colspan="4" class="muted">
+                  <td colspan={mixedSoftware ? 5 : 4} class="muted">
                     not probed yet{data.last_status === 'ok' ? '' : ' (nothing resolved to probe)'}
                   </td>
                 </tr>

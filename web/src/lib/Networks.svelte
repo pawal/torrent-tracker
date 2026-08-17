@@ -1,5 +1,5 @@
 <script>
-  import { getNetworks, flag } from './api.js'
+  import { getNetworks, describeSoftware, flag } from './api.js'
 
   let data = $state(null)
   let error = $state(null)
@@ -51,6 +51,33 @@
       </p>
     {/if}
   </div>
+
+  {#if data.software.length}
+    <div class="card">
+      <h2>By tracker software</h2>
+      <p class="sub">
+        Identified for {data.probes.identified} of {data.probes.trackers} trackers, from the
+        failure text and reply shape each implementation hardcodes. UDP endpoints disclose
+        nothing, so this covers the HTTP ones that answered.
+      </p>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr><th>Software</th><th>Trackers</th><th>Endpoints</th></tr>
+          </thead>
+          <tbody>
+            {#each data.software as s (s.signature)}
+              <tr>
+                <td title={s.signature}>{describeSoftware(s.signature)}</td>
+                <td class="mono">{s.trackers}</td>
+                <td class="mono">{s.endpoints}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {/if}
 
   <div class="card">
     <h2>Enrichment coverage</h2>

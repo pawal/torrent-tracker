@@ -177,6 +177,39 @@ Only the rollup reaches the change feed — `tracker_up`, `tracker_down` and
 `tracker_partial` — because per-address transitions on a CDN-fronted name would
 flood it. The per-endpoint, per-address detail lives on the tracker page.
 
+### What software is answering
+
+No tracker discloses a version, and BEP 15 has nowhere to put one. But the HTTP
+reply the prober already fetched carries a fingerprint: the failure text an
+implementation chose, or the shape of the dict it returned, are literals in its
+source. Recording them costs no extra request:
+
+```
+26  no info_hash parameter supplied                          (opentracker)
+ 7  complete,downloaded,incomplete,interval,min interval,peers
+ 4  files
+ 3  scrape requires query string
+ 1  files,flags,flags.min_request_interval
+```
+
+18 clusters over 60 of 299 trackers on the seed list. The coverage is thin on
+purpose: UDP endpoints disclose nothing, and only live HTTP ones answer at all,
+so this is a sample of one transport rather than a census.
+
+The raw signature is what gets stored. Naming a cluster is a guess, and a guess
+written into history cannot be corrected, so the mapping from signature to a
+name like `opentracker` lives in `software` in `web/src/lib/api.js` and is
+applied at render time — extend it there and every stored row is reinterpreted.
+Anything unnamed displays as its signature, which still groups correctly.
+
+The `Server` header is captured alongside, but it names the front end rather
+than the tracker: nginx and Cloudflare overwrite whatever the tracker set.
+
+A tracker's software shows once on its page, breaking out per endpoint only
+when they disagree, and aggregates under "By tracker software" on the networks
+page. It is an inference, not a measurement, so it renders in the muted style
+`parked` and `rolling` use rather than joining the status colours.
+
 `poll` probes straight after collecting, so a one-shot run works from the
 addresses it just found. Under `serve` the two run on separate clocks
 (`--probe-interval`, default 6h, against an hourly collection): probing is
@@ -293,7 +326,7 @@ needs no authentication.
 | `GET /api/trackers` | all trackers with their live addresses (`?all=1` includes removed) |
 | `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info and per-endpoint probe results |
 | `GET /api/changes` | the change feed (`?since=RFC3339&limit=N`) |
-| `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals |
+| `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software |
 | `GET /api/runs` | recent collection runs |
 | `GET /healthz` | liveness |
 
@@ -395,7 +428,7 @@ cmd/trackerd/          entry point
 internal/store/        SQLite schema, migrations, queries
 internal/resolver/     DNS lookups (codeberg.org/miekg/dns)
 internal/enrich/       AS/RIR/geo providers: Cymru, RDAP, MaxMind
-internal/prober/       BEP 15 and BEP 48 tracker-protocol checks
+internal/prober/       BEP 15 and BEP 48 checks, software fingerprinting
 internal/collector/    scheduler, the pure diff engine, enrichment and probe runners
 internal/api/          HTTP handlers
 internal/trackerlist/  announce-URL parsing and list fetching

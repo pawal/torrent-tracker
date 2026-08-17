@@ -276,6 +276,13 @@ func merge(key probeKey, ip string, res prober.Result, before store.Probe, seen 
 		RTTms:      int(res.RTT.Milliseconds()),
 		Since:      now,
 		CheckedAt:  now,
+		Signature:  res.Signature,
+		Server:     res.Server,
+	}
+	// A silent round says nothing about the software, so the last thing it did
+	// disclose is kept rather than blanked.
+	if out.Signature == "" && seen {
+		out.Signature, out.Server = before.Signature, before.Server
 	}
 
 	switch res.State {

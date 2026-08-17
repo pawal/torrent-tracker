@@ -48,6 +48,12 @@ type Result struct {
 	State  State
 	Reason string
 	RTT    time.Duration
+	// Signature identifies the tracker software from the shape of its reply.
+	// HTTP only: BEP 15 has nowhere to put anything of the sort.
+	Signature string
+	// Server is the HTTP Server header, which names the front end rather than
+	// the tracker behind it.
+	Server string
 }
 
 // Prober probes endpoints. The zero value is usable.
@@ -213,8 +219,15 @@ func (p *Prober) request(ctx context.Context, client *http.Client, t Target, u s
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	rtt := time.Since(start)
+	server := clean(resp.Header.Get("Server"))
 	if bencoded(body) {
-		return probeResponse{Result: Result{State: Live, RTT: rtt}, answered: true}
+		return probeResponse{
+			Result: Result{
+				State: Live, RTT: rtt,
+				Signature: signature(body), Server: server,
+			},
+			answered: true,
+		}
 	}
 	// Being turned away is not evidence the tracker is gone, and a second
 	// request would only add to the load that caused it.

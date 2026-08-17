@@ -1,5 +1,5 @@
 <script>
-  import { getNetworks, describeSoftware, flag } from './api.js'
+  import { getNetworks, describeSoftware, describeEvidence, softwareTitle, flag } from './api.js'
 
   let data = $state(null)
   let error = $state(null)
@@ -56,19 +56,25 @@
     <div class="card">
       <h2>By tracker software</h2>
       <p class="sub">
-        Identified for {data.probes.identified} of {data.probes.trackers} trackers, from the
-        failure text and reply shape each implementation hardcodes. UDP endpoints disclose
-        nothing, so this covers the HTTP ones that answered.
+        Identified for {data.probes.identified} of {data.probes.trackers} trackers. A failure
+        text is a literal from an implementation and names it; a reply shape is only the keys
+        the answer carried, grouped past the ones that come and go with the peers a tracker
+        has to report. UDP endpoints disclose nothing, so this covers the HTTP ones.
       </p>
       <div class="scroll">
         <table>
           <thead>
-            <tr><th>Software</th><th>Trackers</th><th>Endpoints</th></tr>
+            <tr><th>Software</th><th>Evidence</th><th>Trackers</th><th>Endpoints</th></tr>
           </thead>
           <tbody>
-            {#each data.software as s (s.signature)}
+            {#each data.software as s (s.kind + s.signature)}
               <tr>
-                <td title={s.signature}>{describeSoftware(s.signature)}</td>
+                <td title={softwareTitle(s)}>{describeSoftware(s.signature)}</td>
+                <td>
+                  {#if describeEvidence(s.kind)}
+                    <span class="pill guess">{describeEvidence(s.kind)}</span>
+                  {/if}
+                </td>
                 <td class="mono">{s.trackers}</td>
                 <td class="mono">{s.endpoints}</td>
               </tr>

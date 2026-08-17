@@ -8,24 +8,40 @@ import (
 	"strings"
 )
 
+// Kind says what a signature is made of, because the two are worth very
+// different amounts. A failure text is a literal lifted from the implementation;
+// a shape is only the keys a reply happened to carry.
+type Kind string
+
+const (
+	KindNone    Kind = ""
+	KindFailure Kind = "failure"
+	KindShape   Kind = "shape"
+)
+
 // signature reduces a reply to what identifies the software: the failure text
-// it chose, or the shape of the dict it returned. Both are literals in the
-// implementation. No tracker discloses a version.
-func signature(body []byte) string {
+// it chose, or the shape of the dict it returned. No tracker discloses a
+// version.
+func signature(body []byte) (string, Kind) {
 	v, _, err := decode(body)
 	// A reply the read limit cut short still shows the keys it got to, and the
 	// keys are the whole of the shape.
 	if err != nil && !errors.Is(err, errTruncated) {
-		return ""
+		return "", KindNone
 	}
 	d, ok := v.(bdict)
 	if !ok || len(d) == 0 {
-		return ""
+		return "", KindNone
 	}
 	if reason, ok := d["failure reason"].(string); ok && reason != "" {
-		return clean(reason)
+		if s := clean(reason); s != "" {
+			return s, KindFailure
+		}
 	}
-	return skeleton(d)
+	if s := skeleton(d); s != "" {
+		return s, KindShape
+	}
+	return "", KindNone
 }
 
 // maxSignature keeps a hostile or verbose reply from filling the column.

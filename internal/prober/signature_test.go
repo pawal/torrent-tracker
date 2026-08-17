@@ -17,44 +17,52 @@ func TestSignature(t *testing.T) {
 		name string
 		body string
 		want string
+		kind Kind
 	}{
 		{"opentracker", "d14:failure reason31:no info_hash parameter suppliede",
-			"no info_hash parameter supplied"},
+			"no info_hash parameter supplied", KindFailure},
 		{"another implementation's wording", "d14:failure reason28:scrape requires query stringe",
-			"scrape requires query string"},
-		{"a third", "d14:failure reason17:missing info_hashe", "missing info_hash"},
+			"scrape requires query string", KindFailure},
+		{"a third", "d14:failure reason17:missing info_hashe", "missing info_hash", KindFailure},
 
 		// No error to go on, so the reply's shape stands in.
-		{"empty scrape", "d5:filesdee", "files"},
+		{"empty scrape", "d5:filesdee", "files", KindShape},
 		{"scrape with flags", "d5:filesde5:flagsd20:min_request_intervali36956eee",
-			"files,flags,flags.min_request_interval"},
-		{"announce shape", "d8:intervali1800e5:peersdee", "interval,peers"},
+			"files,flags,flags.min_request_interval", KindShape},
+		{"announce shape", "d8:intervali1800e5:peersdee", "interval,peers", KindShape},
 		{"announce with counts", "d8:completei0e10:incompletei0e8:intervali1800e5:peers0:e",
-			"complete,incomplete,interval,peers"},
+			"complete,incomplete,interval,peers", KindShape},
 
 		// Per-torrent data must not reach the fingerprint: the info_hash keys
 		// under "files" differ per request and would make every reply unique.
-		{"populated scrape", "d5:filesd20:\xf3\x9a\x01\xbe\x44\x7c\x28\xd0\x91\xff\x02\x5e\xa7\x13\xcc\x60\x88\x1d\xb4\x35d8:completei3eeee", "files"},
+		{"populated scrape", "d5:filesd20:\xf3\x9a\x01\xbe\x44\x7c\x28\xd0\x91\xff\x02\x5e\xa7\x13\xcc\x60\x88\x1d\xb4\x35d8:completei3eeee", "files", KindShape},
 
-		{"not bencoded", "<html>404</html>", ""},
-		{"empty body", "", ""},
-		{"a list, not a dict", "li1ee", ""},
+		{"not bencoded", "<html>404</html>", "", KindNone},
+		{"empty body", "", "", KindNone},
+		{"a list, not a dict", "li1ee", "", KindNone},
 
 		// A value we never saw the start of proves nothing, so its key is not
 		// allowed to stand in for a signature.
-		{"truncated", "d14:failure reason31:no info", ""},
-		{"truncated before any key", "d5:fil", ""},
-		{"garbage after a good key", "d8:intervali18Xe", ""},
+		{"truncated", "d14:failure reason31:no info", "", KindNone},
+		{"truncated before any key", "d5:fil", "", KindNone},
+		{"garbage after a good key", "d8:intervali18Xe", "", KindNone},
 
 		// But a key whose value merely ran out still shows what the value was,
 		// which is how a reply the read limit cut short keeps its shape.
-		{"scrape cut off mid-table", "d5:filesd20:\xf3\x9a\x01\xbe\x44\x7c\x28\xd0\x91\xff\x02\x5e\xa7\x13\xcc\x60\x88\x1d\xb4\x35d8:complet", "files"},
-		{"announce cut off mid-peers", "d8:completei1e8:intervali1800e5:peers12:\xac\x12\x00", "complete,interval"},
+		{"scrape cut off mid-table", "d5:filesd20:\xf3\x9a\x01\xbe\x44\x7c\x28\xd0\x91\xff\x02\x5e\xa7\x13\xcc\x60\x88\x1d\xb4\x35d8:complet", "files", KindShape},
+		{"announce cut off mid-peers", "d8:completei1e8:intervali1800e5:peers12:\xac\x12\x00",
+			"complete,interval", KindShape},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := signature([]byte(tt.body)); got != tt.want {
+			got, kind := signature([]byte(tt.body))
+			if got != tt.want {
 				t.Errorf("signature(%q) = %q, want %q", tt.body, got, tt.want)
+			}
+			// The kind decides how much the signature is trusted: a failure text
+			// names an implementation, a shape only groups replies that look alike.
+			if kind != tt.kind {
+				t.Errorf("signature(%q) kind = %q, want %q", tt.body, kind, tt.kind)
 			}
 		})
 	}
@@ -97,8 +105,8 @@ func TestSignatureSurvivesTheReadLimit(t *testing.T) {
 // A populated scrape and an empty one are the same software, so they must land
 // in the same bucket rather than splitting by how many torrents were listed.
 func TestSignatureIgnoresContent(t *testing.T) {
-	empty := signature([]byte("d5:filesdee"))
-	full := signature([]byte("d5:filesd20:\xf3\x9a\x01\xbe\x44\x7c\x28\xd0\x91\xff\x02\x5e\xa7\x13\xcc\x60\x88\x1d\xb4\x35d8:completei9e10:incompletei4eeee"))
+	empty, _ := signature([]byte("d5:filesdee"))
+	full, _ := signature([]byte("d5:filesd20:\xf3\x9a\x01\xbe\x44\x7c\x28\xd0\x91\xff\x02\x5e\xa7\x13\xcc\x60\x88\x1d\xb4\x35d8:completei9e10:incompletei4eeee"))
 	if empty != full {
 		t.Errorf("empty scrape = %q, populated = %q; want the same signature", empty, full)
 	}
@@ -112,7 +120,7 @@ func TestSignatureIsBounded(t *testing.T) {
 	body := append([]byte("d14:failure reason4000:"), long...)
 	body = append(body, 'e')
 
-	if got := signature(body); len(got) > maxSignature {
+	if got, _ := signature(body); len(got) > maxSignature {
 		t.Errorf("signature is %d bytes, want at most %d", len(got), maxSignature)
 	}
 }
@@ -120,7 +128,7 @@ func TestSignatureIsBounded(t *testing.T) {
 // Control characters in a reply must not end up in the column, the change feed
 // or the page.
 func TestSignatureStripsControlCharacters(t *testing.T) {
-	if got := signature([]byte("d14:failure reason10:bad\x00\x1b[31mxe")); got != "bad[31mx" {
+	if got, _ := signature([]byte("d14:failure reason10:bad\x00\x1b[31mxe")); got != "bad[31mx" {
 		t.Errorf("signature = %q, want the control bytes gone", got)
 	}
 }

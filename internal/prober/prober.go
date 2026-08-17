@@ -48,9 +48,10 @@ type Result struct {
 	State  State
 	Reason string
 	RTT    time.Duration
-	// Signature identifies the tracker software from the shape of its reply.
-	// HTTP only: BEP 15 has nowhere to put anything of the sort.
+	// Signature identifies the tracker software from its reply, and Kind says
+	// which sort of evidence it is. HTTP only: BEP 15 carries neither.
 	Signature string
+	Kind      Kind
 	// Server is the HTTP Server header, which names the front end rather than
 	// the tracker behind it.
 	Server string
@@ -260,10 +261,11 @@ func (p *Prober) request(ctx context.Context, client *http.Client, t Target, u s
 	rtt := time.Since(start)
 	server := clean(resp.Header.Get("Server"))
 	if bencoded(body) {
+		sig, kind := signature(body)
 		return probeResponse{
 			Result: Result{
 				State: Live, RTT: rtt,
-				Signature: signature(body), Server: server,
+				Signature: sig, Kind: kind, Server: server,
 			},
 			answered: true,
 		}

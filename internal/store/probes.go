@@ -3,7 +3,11 @@ package store
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
+
+	"github.com/pawal/torrent-tracker/internal/prober"
 )
 
 // Reach is how much of a tracker answers the protocol. A separate axis from
@@ -56,10 +60,12 @@ type Probe struct {
 	MissCount  int         `json:"-"`
 	Since      time.Time   `json:"since"`
 	CheckedAt  time.Time   `json:"checked_at"`
-	// Signature fingerprints the tracker software, Server the front end. HTTP
-	// only: BEP 15 carries neither.
-	Signature string `json:"signature,omitempty"`
-	Server    string `json:"server,omitempty"`
+	// Signature fingerprints the tracker software, Kind says what sort of
+	// evidence it is, Server names the front end. HTTP only: BEP 15 carries none
+	// of them.
+	Signature string      `json:"signature,omitempty"`
+	Kind      prober.Kind `json:"signature_kind,omitempty"`
+	Server    string      `json:"server,omitempty"`
 }
 
 // RollUp reduces per-address probe results to one verdict for the name.
@@ -156,7 +162,7 @@ func (s *Store) EndpointsFor(ctx context.Context, trackerID int64) ([]Endpoint, 
 func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT p.endpoint_id, p.ip, p.family, p.result, p.reason, p.rtt_ms,
-		       p.miss_count, p.since, p.checked_at, p.signature, p.server
+		       p.miss_count, p.since, p.checked_at, p.signature, p.signature_kind, p.server
 		FROM probes p JOIN endpoints e ON e.id = p.endpoint_id
 		WHERE e.tracker_id = ?
 		ORDER BY e.scheme, e.port, p.family, p.ip`, trackerID)
@@ -172,7 +178,8 @@ func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error)
 			since, checked string
 		)
 		if err := rows.Scan(&p.EndpointID, &p.IP, &p.Family, &p.Result, &p.Reason,
-			&p.RTTms, &p.MissCount, &since, &checked, &p.Signature, &p.Server); err != nil {
+			&p.RTTms, &p.MissCount, &since, &checked, &p.Signature, &p.Kind,
+			&p.Server); err != nil {
 			return nil, err
 		}
 		var err error
@@ -205,14 +212,15 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO probes (endpoint_id, ip, family, result, reason, rtt_ms, miss_count,
-			                    since, checked_at, signature, server)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			                    since, checked_at, signature, signature_kind, server)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (endpoint_id, ip) DO UPDATE SET
 				result = excluded.result, reason = excluded.reason, rtt_ms = excluded.rtt_ms,
 				miss_count = excluded.miss_count, since = excluded.since, checked_at = excluded.checked_at,
-				signature = excluded.signature, server = excluded.server`,
+				signature = excluded.signature, signature_kind = excluded.signature_kind,
+				server = excluded.server`,
 			p.EndpointID, p.IP, p.Family, p.Result, p.Reason, p.RTTms, p.MissCount,
-			fmtTime(p.Since), fmtTime(p.CheckedAt), p.Signature, p.Server); err != nil {
+			fmtTime(p.Since), fmtTime(p.CheckedAt), p.Signature, p.Kind, p.Server); err != nil {
 			return fmt.Errorf("store probe %d/%s: %w", p.EndpointID, p.IP, err)
 		}
 	}
@@ -337,41 +345,124 @@ func (s *Store) ProbeCoverage(ctx context.Context) (EndpointCoverage, error) {
 	return c, err
 }
 
-// SoftwareStat is one signature and how much of the registry shows it.
+// SoftwareStat is one cluster of trackers that answered alike.
 type SoftwareStat struct {
-	Signature string `json:"signature"`
-	Trackers  int    `json:"trackers"`
-	Endpoints int    `json:"endpoints"`
+	Signature string      `json:"signature"`
+	Kind      prober.Kind `json:"kind,omitempty"`
+	Trackers  int         `json:"trackers"`
+	Endpoints int         `json:"endpoints"`
+	// Variants are the raw signatures folded into the cluster, present only
+	// where grouping dropped keys to get there.
+	Variants []string `json:"variants,omitempty"`
+}
+
+// conditional keys come and go with the peers a tracker has to report or the
+// extensions it chose to mention, not with the software. Grouping on them split
+// one implementation across ten rows.
+var conditional = map[string]bool{
+	"peers":           true,
+	"peers6":          true,
+	"downloaded":      true,
+	"min interval":    true,
+	"warning message": true,
+	"external ip":     true,
+	"tracker id":      true,
+}
+
+// groupSignature reduces a reply shape to the keys that identify it. A failure
+// text is a literal from the implementation and passes through untouched.
+func groupSignature(sig string, kind prober.Kind) string {
+	if kind != prober.KindShape {
+		return sig
+	}
+	keep := make([]string, 0, 4)
+	for _, k := range strings.Split(sig, ",") {
+		if !conditional[k] {
+			keep = append(keep, k)
+		}
+	}
+	// Nothing but conditional keys leaves the raw shape as the only handle.
+	if len(keep) == 0 {
+		return sig
+	}
+	return strings.Join(keep, ",")
 }
 
 // SoftwareStats groups the registry by tracker software, most common first.
+// Folding happens here rather than in SQL because the grouping key is not the
+// stored signature: shapes lose their conditional keys first.
 func (s *Store) SoftwareStats(ctx context.Context, limit int) ([]SoftwareStat, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 25
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.signature, COUNT(DISTINCT e.tracker_id), COUNT(DISTINCT p.endpoint_id)
+		SELECT DISTINCT p.signature, p.signature_kind, e.tracker_id, p.endpoint_id
 		FROM probes p
 		JOIN endpoints e ON e.id = p.endpoint_id
 		JOIN trackers t ON t.id = e.tracker_id
-		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''
-		GROUP BY p.signature
-		ORDER BY COUNT(DISTINCT e.tracker_id) DESC, p.signature
-		LIMIT ?`, limit)
+		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := []SoftwareStat{}
+	type cluster struct {
+		SoftwareStat
+		trackers  map[int64]bool
+		endpoints map[int64]bool
+		variants  map[string]bool
+	}
+	groups := map[string]*cluster{}
 	for rows.Next() {
-		var st SoftwareStat
-		if err := rows.Scan(&st.Signature, &st.Trackers, &st.Endpoints); err != nil {
+		var (
+			sig, kind             string
+			trackerID, endpointID int64
+		)
+		if err := rows.Scan(&sig, &kind, &trackerID, &endpointID); err != nil {
 			return nil, err
 		}
+		grouped := groupSignature(sig, prober.Kind(kind))
+		key := kind + "\x00" + grouped
+		c := groups[key]
+		if c == nil {
+			c = &cluster{
+				SoftwareStat: SoftwareStat{Signature: grouped, Kind: prober.Kind(kind)},
+				trackers:     map[int64]bool{},
+				endpoints:    map[int64]bool{},
+				variants:     map[string]bool{},
+			}
+			groups[key] = c
+		}
+		c.trackers[trackerID] = true
+		c.endpoints[endpointID] = true
+		if sig != grouped {
+			c.variants[sig] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]SoftwareStat, 0, len(groups))
+	for _, c := range groups {
+		st := c.SoftwareStat
+		st.Trackers, st.Endpoints = len(c.trackers), len(c.endpoints)
+		for v := range c.variants {
+			st.Variants = append(st.Variants, v)
+		}
+		sort.Strings(st.Variants)
 		out = append(out, st)
 	}
-	return out, rows.Err()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Trackers != out[j].Trackers {
+			return out[i].Trackers > out[j].Trackers
+		}
+		return out[i].Signature < out[j].Signature
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // ProbeTarget is one tracker's probing work: its endpoints and the addresses

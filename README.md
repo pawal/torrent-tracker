@@ -203,6 +203,22 @@ source. Recording them costs no extra request:
 purpose: UDP endpoints disclose nothing, and only live HTTP ones answer at all,
 so this is a sample of one transport rather than a census.
 
+The two kinds of evidence are not worth the same, so which one a signature is
+gets recorded alongside it. A **failure text** is a literal lifted from somebody's
+source and points at one implementation. A **reply shape** is only the keys the
+answer happened to carry, and some of those follow the peers a tracker has to
+report rather than the software: `peers6` appears only when there was an IPv6
+peer to list, and one tracker in the live registry answered with `peers6` and no
+`peers` at all. Grouping the two alike split a single implementation across ten
+rows and let a tracker drift between them from one pass to the next.
+
+So shapes are grouped with their conditional keys — `peers`, `peers6`,
+`downloaded`, `min interval`, `warning message`, `external ip`, `tracker id` —
+dropped, which folded those ten rows into one; failure texts are grouped
+verbatim. The raw signatures are kept and listed as the cluster's variants, so a
+fold can be inspected instead of trusted. Rows recorded before the kind was
+tracked have none, and group by their raw signature until the next pass.
+
 The raw signature is what gets stored. Naming a cluster is a guess, and a guess
 written into history cannot be corrected, so the mapping from signature to a
 name like `opentracker` lives in `software` in `web/src/lib/api.js` and is

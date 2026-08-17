@@ -48,6 +48,27 @@ export function describeSoftware(signature) {
   return software[signature] ?? signature
 }
 
+// What a row rests on. A failure text is a literal from some tracker's source
+// and points at one implementation; a reply shape is only the keys the answer
+// carried, which gathers lookalikes but names nothing.
+const evidence = {
+  failure: 'failure text',
+  shape: 'reply shape',
+}
+
+export function describeEvidence(kind) {
+  return evidence[kind] ?? ''
+}
+
+/**
+ * Tooltip for a software row: the signature it grouped on, and the raw ones
+ * folded into it, so a cluster can be inspected rather than taken on trust.
+ */
+export function softwareTitle(s) {
+  if (!s?.variants?.length) return s?.signature ?? ''
+  return `${s.signature}\n\ngrouped from:\n${s.variants.join('\n')}`
+}
+
 /** Regional-indicator flag for a two-letter country code. */
 export function flag(cc) {
   if (!cc || cc.length !== 2 || !/^[A-Za-z]{2}$/.test(cc)) return ''

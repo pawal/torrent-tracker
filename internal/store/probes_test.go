@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/pawal/torrent-tracker/internal/prober"
 )
 
 func probeAt(endpointID int64, ip string, result ProbeResult, now time.Time) Probe {
@@ -353,6 +356,100 @@ func TestSoftwareStats(t *testing.T) {
 	}
 	if cov.Identified != 3 || cov.Trackers != 4 {
 		t.Errorf("coverage = %d identified of %d, want 3 of 4", cov.Identified, cov.Trackers)
+	}
+}
+
+// The live registry had one implementation spread across ten rows, split by keys
+// that follow the peers a tracker happens to have rather than the software it
+// runs: "peers6" shows up only when there was an IPv6 peer to report, and one
+// tracker answered with "peers6" and no "peers" at all. Grouping has to see past
+// that, or the chart invents diversity and a tracker drifts between rows from
+// one pass to the next without anything having changed.
+func TestSoftwareStatsGroupsShapesPastConditionalKeys(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	put := func(name, sig string, kind prober.Kind) {
+		t.Helper()
+		_, endpointID := newTrackerWithEndpoint(t, s, name)
+		p := probeAt(endpointID, "1.2.3.4", ProbeLive, now)
+		p.Signature, p.Kind = sig, kind
+		if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Verbatim from tracker.evilbit.de, where each of these was its own row.
+	shapes := []string{
+		"complete,downloaded,incomplete,interval,min interval,peers",
+		"complete,downloaded,incomplete,interval,min interval,peers,peers6",
+		"complete,incomplete,interval,min interval,peers",
+		"complete,incomplete,interval,peers,peers6",
+		"complete,downloaded,incomplete,interval,min interval,peers6",
+		"complete,external ip,incomplete,interval,peers,peers6",
+		"complete,incomplete,interval,min interval,peers,warning message",
+		"complete,incomplete,interval,peers",
+	}
+	for i, sig := range shapes {
+		put(fmt.Sprintf("shape%d.example.com", i), sig, prober.KindShape)
+	}
+	// A genuinely different shape, and a failure text, which is a literal from
+	// somebody's source and must never be folded into anything.
+	put("sparse.example.com", "interval,peers", prober.KindShape)
+	put("literal.example.com", "no info_hash parameter supplied", prober.KindFailure)
+
+	got, err := s.SoftwareStats(ctx, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d rows, want 3: %+v", len(got), got)
+	}
+	if got[0].Signature != "complete,incomplete,interval" || got[0].Trackers != len(shapes) {
+		t.Errorf("row 0 = %q on %d trackers, want the announce shape on %d",
+			got[0].Signature, got[0].Trackers, len(shapes))
+	}
+	// The raw signatures are kept so the fold can be inspected rather than taken
+	// on trust.
+	if len(got[0].Variants) != len(shapes) {
+		t.Errorf("row 0 lists %d variants, want all %d that were folded in: %v",
+			len(got[0].Variants), len(shapes), got[0].Variants)
+	}
+	rest := map[string]prober.Kind{got[1].Signature: got[1].Kind, got[2].Signature: got[2].Kind}
+	if rest["interval"] != prober.KindShape {
+		t.Errorf("rows = %+v, want the sparse shape kept apart as \"interval\"", got)
+	}
+	if rest["no info_hash parameter supplied"] != prober.KindFailure {
+		t.Errorf("rows = %+v, want the failure text untouched", got)
+	}
+}
+
+// Rows probed before the kind column existed have no kind, so there is nothing
+// to say whether their signature is a literal or a shape. They group by the raw
+// signature, exactly as they did before, until the next pass rewrites them.
+func TestSoftwareStatsLeavesUnclassifiedRowsAlone(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	const sig = "complete,downloaded,incomplete,interval,min interval,peers"
+	_, endpointID := newTrackerWithEndpoint(t, s, "legacy.example.com")
+	p := probeAt(endpointID, "1.2.3.4", ProbeLive, now)
+	p.Signature = sig
+	if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{p}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.SoftwareStats(ctx, 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Signature != sig {
+		t.Errorf("stats = %+v, want the raw signature %q", got, sig)
+	}
+	if got[0].Variants != nil {
+		t.Errorf("variants = %v, want none: nothing was folded", got[0].Variants)
 	}
 }
 

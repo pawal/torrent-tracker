@@ -331,12 +331,13 @@ func merge(key probeKey, ip string, res prober.Result, before store.Probe, seen 
 		Since:      now,
 		CheckedAt:  now,
 		Signature:  res.Signature,
+		Kind:       res.Kind,
 		Server:     res.Server,
 	}
 	// A silent round says nothing about the software, so the last thing it did
 	// disclose is kept rather than blanked.
 	if out.Signature == "" && seen {
-		out.Signature, out.Server = before.Signature, before.Server
+		out.Signature, out.Kind, out.Server = before.Signature, before.Kind, before.Server
 	}
 
 	switch res.State {

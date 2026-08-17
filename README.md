@@ -407,6 +407,7 @@ live in the CLI, so a public deployment needs no authentication.
 
 ```sh
 make check      # gofmt, go vet, go test
+make vuln       # govulncheck
 make dev        # Vite dev server with hot reload, proxying /api to :8080
 make help       # all targets
 ```
@@ -416,6 +417,13 @@ Run `make run` in one shell and `make dev` in another for frontend work.
 GitHub Actions runs the same checks on every push and pull request
 (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, a static build,
 and a frontend build that fails if `web/dist` is out of date with `web/src`.
+
+It also runs `govulncheck`, weekly as well as on every push, since an advisory
+published tomorrow will not wait for the next commit. That is a reachability
+check, not a dependency-graph scan: it reports only advisories the code can
+actually reach. Graph scanners will flag rather more, including modules that
+are pruned before they ever reach the binary — `go version -m ./trackerd` lists
+what is genuinely linked.
 
 The frontend build output in `web/dist/` is committed so `go build` and
 `go install` work without Node installed. Rebuild it with `make ui` after

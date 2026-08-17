@@ -4,6 +4,9 @@ on:
   push:
     branches: [master]
   pull_request:
+  # An advisory published tomorrow will not wait for the next push.
+  schedule:
+    - cron: '0 6 * * 1'
 
 permissions:
   contents: read
@@ -40,6 +43,24 @@ jobs:
         run: go build -ldflags '-s -w' -o trackerd ./cmd/trackerd
         env:
           CGO_ENABLED: 0
+
+  vuln:
+    name: Vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Reachability analysis rather than a dependency-graph scan: it fails
+      # only on advisories this code can actually reach, so a failure here is
+      # worth acting on. Graph scanners flag every CVE in the module list,
+      # including modules pruned before they reach the binary.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   ui:
     name: Frontend

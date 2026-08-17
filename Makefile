@@ -13,7 +13,7 @@ GO_SRC  := $(shell find . -name '*.go' -not -path './web/node_modules/*')
 WEB_SRC := $(shell find web/src -type f 2>/dev/null) web/index.html web/vite.config.js
 UI      := web/dist/index.html
 
-.PHONY: all build ui test vet fmt tidy check clean distclean run poll import list changes dev install help
+.PHONY: all build ui test vet fmt tidy check vuln clean distclean run poll import list changes dev install help
 
 all: build ## Build the UI and the binary (default)
 
@@ -51,6 +51,10 @@ tidy: ## Tidy go.mod
 	go mod tidy
 
 check: fmt vet test ## Format, vet and test
+
+# Not part of check: it fetches the vulnerability database over the network.
+vuln: ## Report advisories this code can actually reach
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 ## --- running -------------------------------------------------------------
 

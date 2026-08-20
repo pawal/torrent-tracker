@@ -194,14 +194,24 @@ pass. The open interval stays in `probes`, so the two together cover the axis
 with no seam.
 
 The tracker page draws that as one lane per endpoint and address over a fixed
-7, 30 or 90 day window:
+7, 30 or 90 day window, with the DNS status of the name on the same axis above
+it:
 
 ```
+resolution
+dns       1337.abcvg.info            ████████▓▓████████████████████   93%
+tracker protocol
 http:80   104.21.72.244              ████████░░████████████████████   77%
 http:80   2606:4700:3032::6815:48f4  ██████░░░░░░████████         ▒▒  65%  gone
 udp:6969  104.21.72.244              ██████████████████░░██████████   88%
 udp:6969  172.67.136.175                            ▒▒▒▒████████████  77%
+          └ 07-22      07-27      08-01      08-06      08-11
 ```
+
+One axis rather than two cards, because the useful question spans both: a name
+that stopped answering *while resolving perfectly* is a dead tracker, and one
+that stopped answering *when its DNS went SERVFAIL* is a broken delegation.
+Reading down a column says which.
 
 Blank is time nobody asked, which is not the same as asking and learning
 nothing: probing starts when a name is added and stops when its address goes
@@ -210,9 +220,20 @@ scale. The percentage is the share of *measured* time the address answered, so
 an unprobed week neither helps nor hurts it — the same abstention rule the
 rollup uses.
 
-`--probe-retention` (default 90 days) bounds the table. Closed intervals older
-than that are swept at the end of each probing pass, so the storage follows the
-retention window rather than uptime.
+The DNS lane needs no new collection. Every pass already wrote a row to
+`lookups` — status, duration and error, per tracker — and nothing ever read it,
+so a month of resolution history was on disk from the start. Consecutive
+samples of the same status coalesce into one interval, which is what makes it
+drawable: 720 hourly samples become 11 intervals for a name with two outages.
+Each sample speaks for the time until the next one, which is all a poll can.
+The same query reports median and 95th-percentile resolution latency for the
+window; percentiles rather than a mean, since one resolver timeout would drag
+an average past every real reading.
+
+Both logs are bounded by retention rather than by uptime: `--probe-retention`
+and `--lookup-retention` (both 90 days) sweep at the end of each probing and
+collection pass. `lookups` in particular was growing without bound — one row
+per tracker per pass is about 200k rows a month on a 300-name registry.
 
 ### What software is answering
 
@@ -368,8 +389,8 @@ The database path also comes from `$TRACKERD_DB`.
 
 Collection flags (`serve` and `poll`): `--resolver` (comma-separated, defaults
 to `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`,
-`--miss-threshold`, `--roll-after`, `--steady-after`. `serve` additionally
-takes `--addr`, `--interval` and `--no-collect`.
+`--miss-threshold`, `--roll-after`, `--steady-after`, `--lookup-retention`.
+`serve` additionally takes `--addr`, `--interval` and `--no-collect`.
 
 Probing flags (`probe`, `poll` and `serve`): `--probe-timeout`,
 `--probe-workers`, `--probe-fanout`, `--probe-miss-threshold`,
@@ -407,7 +428,7 @@ needs no authentication.
 | --- | --- |
 | `GET /api/stats` | counters and the last run |
 | `GET /api/trackers` | all trackers with their live addresses (`?all=1` includes removed) |
-| `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info, per-endpoint probe results and their history (`?days=N`, default 30) |
+| `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info, per-endpoint probe results, and probe and DNS history for the window (`?days=N`, default 30) |
 | `GET /api/changes` | the change feed (`?since=RFC3339&limit=N`) |
 | `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software |
 | `GET /api/runs` | recent collection runs |

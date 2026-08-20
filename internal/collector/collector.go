@@ -32,6 +32,9 @@ type Collector struct {
 	RollAfter int
 	// SteadyAfter is how many unchanged runs switch it back. Defaults to 3.
 	SteadyAfter int
+	// Retention is how long the per-pass lookup log is kept. Defaults to 90
+	// days, three times the month the UI draws.
+	Retention time.Duration
 	// AfterRun, if set, is called after each pass inside Run. Enrichment hangs
 	// off this so freshly discovered addresses are annotated straight away.
 	AfterRun func(context.Context)
@@ -68,6 +71,13 @@ func (c *Collector) concurrency() int {
 		return c.Concurrency
 	}
 	return 8
+}
+
+func (c *Collector) retention() time.Duration {
+	if c.Retention > 0 {
+		return c.Retention
+	}
+	return 90 * 24 * time.Hour
 }
 
 func (c *Collector) rollAfter() int {
@@ -144,6 +154,12 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 		}(t)
 	}
 	wg.Wait()
+
+	if n, err := c.Store.PruneLookups(ctx, c.now().Add(-c.retention())); err != nil {
+		c.log().Error("prune lookups", "err", err)
+	} else if n > 0 {
+		c.log().Info("pruned lookups", "rows", n)
+	}
 
 	end := c.now()
 	sum.Duration = end.Sub(start)

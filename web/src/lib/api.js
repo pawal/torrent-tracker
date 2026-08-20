@@ -23,11 +23,9 @@ export const getNetworks = (limit = 20) => get(`/api/networks?limit=${limit}`)
 export const getVersion = () => get('/api/version')
 
 /**
- * Lay the probe verdicts out per address on a shared time axis, one lane per
- * (endpoint, address). Closed intervals come from probe_history and the one
- * still open is the row in probes, so together they cover the window with no
- * seam. Time inside no interval is left blank: nobody probed then, which is
- * not the same as having probed and learnt nothing.
+ * Probe verdicts per (endpoint, address) on a shared time axis. probe_history
+ * holds the closed intervals and probes the open one, so together they cover
+ * the window. Time in no interval is blank: nobody probed then.
  */
 export function probeLanes(data, from, now) {
   const span = now - from
@@ -62,8 +60,7 @@ export function probeLanes(data, from, now) {
     const a = Math.max(new Date(iv.since).getTime(), from)
     const b = Math.min(until, now)
     if (!(b > a)) return
-    // Unknown abstains from the uptime figure the same way it abstains from
-    // the reachability rollup: it is an absence of evidence, not a fault.
+    // Unknown abstains from uptime as it does from the rollup.
     if (iv.result === 'live' || iv.result === 'dead') {
       lane.measured += b - a
       if (iv.result === 'live') lane.live += b - a
@@ -93,8 +90,7 @@ export function probeLanes(data, from, now) {
   for (const lane of out) {
     lane.segments.sort((a, b) => a.from - b.from)
     lane.uptime = lane.measured > 0 ? lane.live / lane.measured : null
-    // No open interval means the address stopped resolving and is no longer
-    // probed, so its lane ends before the right edge.
+    // No open interval: the address stopped resolving, so the lane ends early.
     lane.gone = lane.result === ''
   }
   out.sort(
@@ -107,11 +103,42 @@ export function probeLanes(data, from, now) {
   return out
 }
 
+/**
+ * The DNS status on the same axis as the probe lanes. One lane: a name resolves
+ * as a whole, and the per-address question is the one the probe lanes answer.
+ */
+export function resolutionLane(data, from, now) {
+  const span = now - from
+  if (!(span > 0)) return null
+
+  const lane = { key: 'dns', segments: [], resolved: 0, measured: 0 }
+  for (const iv of data?.resolution ?? []) {
+    const a = Math.max(new Date(iv.since).getTime(), from)
+    const b = Math.min(new Date(iv.until).getTime(), now)
+    // The newest interval has no sample bounding it, so it can be an instant.
+    if (b < a) continue
+    lane.measured += b - a
+    if (iv.status === 'ok') lane.resolved += b - a
+    lane.segments.push({
+      result: iv.status,
+      reason: iv.error ?? '',
+      lookups: iv.lookups,
+      from: a,
+      to: b,
+      left: ((a - from) / span) * 100,
+      width: ((b - a) / span) * 100,
+    })
+  }
+  if (lane.segments.length === 0) return null
+  lane.uptime = lane.measured > 0 ? lane.resolved / lane.measured : null
+  return lane
+}
+
 const DAY = 86_400_000
 
 /**
- * Day-boundary ticks for a timeline, labelling roughly `labels` of them. Long
- * windows drop the unlabelled days: 90 hairlines read as a texture, not a grid.
+ * Day-boundary ticks, labelling roughly `labels` of them. Long windows drop the
+ * unlabelled days: 90 hairlines read as texture, not a grid.
  */
 export function axisTicks(from, now, labels = 6) {
   const span = now - from

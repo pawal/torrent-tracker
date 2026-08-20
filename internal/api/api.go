@@ -164,11 +164,14 @@ type trackerDetail struct {
 	Info      map[string]store.IPInfo `json:"info"`
 	Endpoints []store.Endpoint        `json:"endpoints"`
 	Probes    []store.Probe           `json:"probes"`
-	// History holds the closed probe intervals inside the requested window.
-	// The open interval is the matching row in Probes, so the two together
-	// cover the axis with no gap.
+	// History is the closed probe intervals in the window; the open one is the
+	// matching row in Probes, so together they cover the axis.
 	History     []store.ProbeInterval `json:"probe_history"`
 	HistoryFrom time.Time             `json:"probe_history_from"`
+	// Resolution is the DNS status over the same window, so a page can show
+	// whether a name stopped answering because it stopped resolving.
+	Resolution      []store.StatusInterval `json:"resolution"`
+	ResolutionStats store.ResolutionStats  `json:"resolution_stats"`
 }
 
 func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
@@ -214,10 +217,16 @@ func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	resolution, latency, err := s.Store.ResolutionHistoryFor(r.Context(), t.ID, from)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, trackerDetail{
 		Tracker: t, Records: records, Changes: changes, Info: info,
 		Endpoints: endpoints, Probes: probes,
 		History: history, HistoryFrom: from,
+		Resolution: resolution, ResolutionStats: latency,
 	})
 }
 

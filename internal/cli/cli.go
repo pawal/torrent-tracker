@@ -148,6 +148,7 @@ type resolverFlags struct {
 	threshold int
 	rollAfter int
 	steady    int
+	retention time.Duration
 }
 
 func (rf *resolverFlags) register(fs *flag.FlagSet) {
@@ -161,6 +162,8 @@ func (rf *resolverFlags) register(fs *flag.FlagSet) {
 		"changed runs before a family is tracked by prefix instead of by address (-1 to keep every address)")
 	fs.IntVar(&rf.steady, "steady-after", 3,
 		"unchanged runs before a rolling family goes back to per-address tracking")
+	fs.DurationVar(&rf.retention, "lookup-retention", 90*24*time.Hour,
+		"how long the per-pass lookup log is kept")
 }
 
 // splitList turns a comma-separated flag value into a slice, dropping blanks.
@@ -196,6 +199,7 @@ func (rf *resolverFlags) collector(st *store.Store, log *slog.Logger) (*collecto
 		MissThreshold: rf.threshold,
 		RollAfter:     rf.rollAfter,
 		SteadyAfter:   rf.steady,
+		Retention:     rf.retention,
 	}, nil
 }
 

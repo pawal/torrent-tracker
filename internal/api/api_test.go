@@ -210,9 +210,11 @@ func TestGetTrackerDetailProbeHistory(t *testing.T) {
 	}
 
 	var got struct {
-		History     []store.ProbeInterval `json:"probe_history"`
-		HistoryFrom time.Time             `json:"probe_history_from"`
-		Probes      []store.Probe         `json:"probes"`
+		History     []store.ProbeInterval  `json:"probe_history"`
+		HistoryFrom time.Time              `json:"probe_history_from"`
+		Probes      []store.Probe          `json:"probes"`
+		Resolution  []store.StatusInterval `json:"resolution"`
+		Latency     store.ResolutionStats  `json:"resolution_stats"`
 	}
 	getJSON(t, h, "/api/trackers/a.example.com?days=7", &got)
 
@@ -224,6 +226,15 @@ func TestGetTrackerDetailProbeHistory(t *testing.T) {
 	}
 	if d := now.Sub(got.HistoryFrom).Hours(); d < 167 || d > 169 {
 		t.Errorf("probe_history_from is %.0fh back, want about 168", d)
+	}
+
+	// The DNS axis rides the same window, drawn from the lookup log the
+	// collector was already writing and nothing was reading.
+	if len(got.Resolution) == 0 {
+		t.Error("resolution history is empty, want the seeded lookup")
+	}
+	if got.Latency.Lookups == 0 {
+		t.Error("resolution_stats counted no lookups")
 	}
 
 	// A nonsense window falls back to the default rather than collapsing to

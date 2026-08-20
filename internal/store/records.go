@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
+	"sort"
 	"time"
 )
 
@@ -247,6 +249,108 @@ func (s *Store) ApplyPlan(ctx context.Context, trackerID int64, plan Plan, now t
 	}
 
 	return tx.Commit()
+}
+
+// StatusInterval is one stretch of time a name held one DNS status, coalesced
+// from the per-pass lookup log.
+type StatusInterval struct {
+	Status Status    `json:"status"`
+	Error  string    `json:"error,omitempty"`
+	Since  time.Time `json:"since"`
+	Until  time.Time `json:"until"`
+	// Lookups is how many passes agreed, so a thinly sampled interval shows.
+	Lookups int `json:"lookups"`
+}
+
+// ResolutionStats summarises the lookups behind one window. Percentiles, not a
+// mean: one resolver timeout would drag an average past every real reading.
+type ResolutionStats struct {
+	Lookups  int `json:"lookups"`
+	MedianMs int `json:"median_ms"`
+	P95ms    int `json:"p95_ms"`
+}
+
+// ResolutionHistoryFor coalesces a tracker's lookup log into one interval per
+// stretch of unchanged status, oldest first, plus the window's latency. Each
+// sample speaks for the time until the next one, which is all a poll can.
+func (s *Store) ResolutionHistoryFor(ctx context.Context, trackerID int64, since time.Time) (
+	[]StatusInterval, ResolutionStats, error,
+) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ts, status, duration_ms, error FROM lookups
+		WHERE tracker_id = ? AND ts >= ?
+		ORDER BY ts`, trackerID, fmtTime(since))
+	if err != nil {
+		return nil, ResolutionStats{}, err
+	}
+	defer rows.Close()
+
+	var (
+		out       = []StatusInterval{}
+		durations []int
+	)
+	for rows.Next() {
+		var (
+			ts       string
+			status   Status
+			duration int
+			lookErr  string
+		)
+		if err := rows.Scan(&ts, &status, &duration, &lookErr); err != nil {
+			return nil, ResolutionStats{}, err
+		}
+		at, err := parseTime(ts)
+		if err != nil {
+			return nil, ResolutionStats{}, err
+		}
+		durations = append(durations, duration)
+
+		// A sample that agrees extends the interval instead of starting one.
+		if n := len(out); n > 0 && out[n-1].Status == status {
+			out[n-1].Until = at
+			out[n-1].Lookups++
+			continue
+		}
+		if n := len(out); n > 0 {
+			out[n-1].Until = at
+		}
+		out = append(out, StatusInterval{
+			Status: status, Error: lookErr, Since: at, Until: at, Lookups: 1,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, ResolutionStats{}, err
+	}
+	return out, resolutionStats(durations), nil
+}
+
+func resolutionStats(durations []int) ResolutionStats {
+	if len(durations) == 0 {
+		return ResolutionStats{}
+	}
+	sorted := append([]int(nil), durations...)
+	sort.Ints(sorted)
+	return ResolutionStats{
+		Lookups:  len(sorted),
+		MedianMs: percentile(sorted, 0.5),
+		P95ms:    percentile(sorted, 0.95),
+	}
+}
+
+// percentile picks the nearest-rank value from an ascending slice.
+func percentile(sorted []int, p float64) int {
+	i := int(math.Ceil(p*float64(len(sorted)))) - 1
+	return sorted[min(max(i, 0), len(sorted)-1)]
+}
+
+// PruneLookups drops samples older than cutoff. Written once per tracker per
+// pass, so without this it is the one table that grows without bound.
+func (s *Store) PruneLookups(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM lookups WHERE ts < ?`, fmtTime(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("prune lookups: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 func addedType(a Action) string {

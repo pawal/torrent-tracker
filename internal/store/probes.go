@@ -197,10 +197,9 @@ func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error)
 }
 
 // PutProbes replaces the results for the given endpoints in one transaction.
-// Addresses not probed this round are dropped; probes describe the present.
-// A verdict the round replaces is first appended to probe_history, so the open
-// interval kept here is the only one that is ever overwritten. now closes the
-// intervals of addresses that stopped being probed altogether.
+// Addresses not probed this round are dropped; probes describe the present. A
+// replaced verdict is archived first, so only the open interval is overwritten.
+// now closes the intervals of addresses that stopped being probed at all.
 func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Probe, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -215,8 +214,8 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 		}
 		keep[p.EndpointID][p.IP] = true
 
-		// merge keeps Since when the verdict stands, so a moved Since is
-		// exactly the signal that the previous interval has ended.
+		// merge holds Since still while a verdict stands, so a moved Since
+		// means the previous interval ended.
 		if err := archiveProbe(ctx, tx, p.EndpointID, p.IP, p.Since); err != nil {
 			return err
 		}
@@ -270,8 +269,7 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 }
 
 // ProbeInterval is one stretch of time an address held one verdict on one
-// endpoint. Closed intervals come from probe_history; the open one is the row
-// still in probes, which is why Until is a pointer.
+// endpoint. Closed intervals only: the open one is still in probes.
 type ProbeInterval struct {
 	EndpointID int64       `json:"endpoint_id"`
 	IP         string      `json:"ip"`
@@ -282,9 +280,8 @@ type ProbeInterval struct {
 	Until      time.Time   `json:"until"`
 }
 
-// archiveProbe closes the stored interval for one address, copying it into
-// probe_history. A verdict that has not moved has since == until and is not
-// worth a row, and an address probed for the first time has nothing to close.
+// archiveProbe copies the stored interval for one address into probe_history.
+// A verdict that has not moved, or a first probe, has nothing to close.
 func archiveProbe(ctx context.Context, tx *sql.Tx, endpointID int64, ip string, until time.Time) error {
 	var (
 		family         int
@@ -316,9 +313,8 @@ func archiveProbe(ctx context.Context, tx *sql.Tx, endpointID int64, ip string, 
 	return nil
 }
 
-// ProbeHistoryFor returns a tracker's closed probe intervals that overlap the
-// window starting at since, oldest first. Intervals still open live in probes
-// and are not repeated here.
+// ProbeHistoryFor returns the closed probe intervals overlapping the window
+// starting at since, oldest first. Open intervals live in probes.
 func (s *Store) ProbeHistoryFor(ctx context.Context, trackerID int64, since time.Time) ([]ProbeInterval, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT h.endpoint_id, h.ip, h.family, h.result, h.reason, h.since, h.until
@@ -351,8 +347,8 @@ func (s *Store) ProbeHistoryFor(ctx context.Context, trackerID int64, since time
 	return out, rows.Err()
 }
 
-// PruneProbeHistory drops intervals that ended before cutoff, so the table
-// stays bounded by the retention window rather than by uptime.
+// PruneProbeHistory drops intervals that ended before cutoff, so the table is
+// bounded by the retention window rather than by uptime.
 func (s *Store) PruneProbeHistory(ctx context.Context, cutoff time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
 		`DELETE FROM probe_history WHERE until < ?`, fmtTime(cutoff))

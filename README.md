@@ -61,8 +61,7 @@ Two things generate history that looks like news but is not.
 different set of edge addresses every time its TTL expires. Recorded one row at
 a time, `p4p.arenabg.com` alone would write about 70,000 address records and
 140,000 change entries a year, all of them saying the same thing. After three
-consecutive runs with a changed set, the family switches to one record per
-prefix:
+changed runs, the family switches to one record per prefix:
 
 ```
 p4p.arenabg.com
@@ -81,6 +80,20 @@ Nothing is reported while the addresses churn inside the prefix; a move to a
 different prefix is a `prefix_added` and a `prefix_removed`. If the addresses
 settle for three runs the family goes back to being tracked address by address.
 `--roll-after=-1` turns the whole thing off and keeps every address.
+
+**Those three changed runs need not be consecutive.** Not every CDN reshuffles
+on every query. `p4p.arenabg.com` serves one CloudFront pool for a couple of
+hours, swaps to another, and swaps back — so its changes are never adjacent, and
+a churn count cleared by the first unchanged run went 1, 0, 1, 0 and never
+reached the threshold. Its IPv4 family stayed on per-address tracking for days,
+emitting four `ip_removed` and four `ip_added` entries per swap, while its IPv6
+family churned every single run and rolled immediately. Three names produced 54%
+of all address churn in the feed on that rule.
+
+So churn now survives an unchanged run and clears only once a family has
+actually settled — the same `--steady-after` that un-rolls a rolling family. A
+set that cannot hold still for three runs is churning; one that renumbers once
+and then holds is a host that moved, and still never rolls.
 
 **Names that are no longer trackers.** Expired tracker domains get bought and
 pointed at a parking host, where they carry on answering and so carry on

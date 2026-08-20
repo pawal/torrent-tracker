@@ -403,3 +403,66 @@ func TestRollingOffByDefault(t *testing.T) {
 	}
 	wantActions(t, plan, "add 2600:9000:2094:1400::1")
 }
+
+// The case that made the change feed useless: a CDN that serves one pool for a
+// couple of hours, swaps to another, and swaps back. Every swap is four
+// ip_removed and four ip_added entries, forever, because the family never
+// manages RollAfter changes in a row — one unchanged run used to wipe the churn
+// count and send it back to the start. p4p.arenabg.com did exactly this for
+// days while its IPv6 family, which churns every single run, rolled at once.
+func TestRollingCatchesAlternatingPools(t *testing.T) {
+	opts := rollOpts(3)
+	opts.SteadyAfter = 3
+	states := map[int]store.FamilyState{}
+	prev := []store.IPRecord{}
+
+	// Two pools, each held for two runs before the swap: change, hold, change,
+	// hold, ... so no two changes are ever adjacent.
+	a, b := cdn("1400"), cdn("3c00")
+	answers := []resolver.Result{a, a, b, b, a, a, b}
+
+	var plan store.Plan
+	for _, answer := range answers {
+		plan = Diff(prev, states, store.StatusOK,
+			Observation{A: nodata(), AAAA: answer}, opts)
+		for _, st := range plan.States {
+			states[st.Family] = st
+		}
+	}
+
+	if !states[6].Rolling {
+		t.Fatalf("family 6 never rolled over %d alternating runs: %+v", len(answers), states[6])
+	}
+	if !stateFor(t, plan, 6).Rolling {
+		t.Error("the plan should report the family as rolling")
+	}
+}
+
+// The other half of the same rule: a family that renumbers once and then holds
+// still is not rolling, it moved. Churn has to clear on its own or every
+// migration would be mistaken for a CDN.
+func TestRollingIgnoresAOneOffRenumbering(t *testing.T) {
+	opts := rollOpts(3)
+	opts.SteadyAfter = 3
+	states := map[int]store.FamilyState{}
+	prev := []store.IPRecord{}
+
+	// One change, then long enough at the new address set to count as settled,
+	// then another single change much later.
+	a, b, c := cdn("1400"), cdn("3c00"), cdn("5c00")
+	answers := []resolver.Result{a, b, b, b, b, b, c, c, c, c}
+
+	for _, answer := range answers {
+		plan := Diff(prev, states, store.StatusOK,
+			Observation{A: nodata(), AAAA: answer}, opts)
+		for _, st := range plan.States {
+			states[st.Family] = st
+		}
+		if states[6].Rolling {
+			t.Fatalf("rolling after a single renumbering: %+v", states[6])
+		}
+	}
+	if states[6].Churn != 0 {
+		t.Errorf("churn = %d after settling, want it cleared", states[6].Churn)
+	}
+}

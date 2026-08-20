@@ -139,14 +139,19 @@ func Diff(prev []store.IPRecord, states map[int]store.FamilyState, prevStatus st
 }
 
 // rollingDecision updates one family's churn counters and reports whether it
-// should now be tracked by prefix.
+// should now be tracked by prefix. Churn survives an unchanged run and clears
+// only once the family has settled, on the same SteadyAfter that un-rolls it:
+// requiring RollAfter changes back to back would never catch a CDN that holds
+// one pool for an hour before swapping.
 func rollingDecision(state *store.FamilyState, addrs []string, opts Options) bool {
 	fp := fingerprint(addrs)
 	first := state.Fingerprint == ""
 	switch {
 	case first || fp == state.Fingerprint:
 		state.Steady++
-		state.Churn = 0
+		if state.Steady >= opts.steadyAfter() {
+			state.Churn = 0
+		}
 	default:
 		state.Churn++
 		state.Steady = 0

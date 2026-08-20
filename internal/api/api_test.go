@@ -174,6 +174,66 @@ func TestGetTrackerDetail(t *testing.T) {
 	}
 }
 
+// The detail page draws a fixed window, so the payload has to say where that
+// window starts and carry the intervals that fall inside it.
+func TestGetTrackerDetailProbeHistory(t *testing.T) {
+	h, st := testServer(t)
+	seed(t, st)
+	ctx := t.Context()
+
+	tr, err := st.TrackerByName(ctx, "a.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddEndpoint(ctx, tr.ID, "udp", 6969, "/announce", base); err != nil {
+		t.Fatal(err)
+	}
+	eps, err := st.EndpointsFor(ctx, tr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Live for a day, then dead: the first verdict closes and only the second
+	// is still open.
+	now := time.Now().UTC()
+	live := store.Probe{
+		EndpointID: eps[0].ID, IP: "1.2.3.4", Family: 4,
+		Result: store.ProbeLive, Since: now.AddDate(0, 0, -2), CheckedAt: now.AddDate(0, 0, -2),
+	}
+	if err := st.PutProbes(ctx, []int64{eps[0].ID}, []store.Probe{live}, live.CheckedAt); err != nil {
+		t.Fatal(err)
+	}
+	dead := live
+	dead.Result, dead.Since, dead.CheckedAt = store.ProbeDead, now.AddDate(0, 0, -1), now
+	if err := st.PutProbes(ctx, []int64{eps[0].ID}, []store.Probe{dead}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	var got struct {
+		History     []store.ProbeInterval `json:"probe_history"`
+		HistoryFrom time.Time             `json:"probe_history_from"`
+		Probes      []store.Probe         `json:"probes"`
+	}
+	getJSON(t, h, "/api/trackers/a.example.com?days=7", &got)
+
+	if len(got.History) != 1 || got.History[0].Result != store.ProbeLive {
+		t.Fatalf("probe_history = %+v, want one live interval", got.History)
+	}
+	if len(got.Probes) != 1 || got.Probes[0].Result != store.ProbeDead {
+		t.Errorf("probes = %+v, want one dead probe", got.Probes)
+	}
+	if d := now.Sub(got.HistoryFrom).Hours(); d < 167 || d > 169 {
+		t.Errorf("probe_history_from is %.0fh back, want about 168", d)
+	}
+
+	// A nonsense window falls back to the default rather than collapsing to
+	// nothing, so the card is never blank because of a bad URL.
+	getJSON(t, h, "/api/trackers/a.example.com?days=0", &got)
+	if len(got.History) != 1 {
+		t.Errorf("days=0 should fall back to the default window, got %+v", got.History)
+	}
+}
+
 func TestGetTrackerNotFound(t *testing.T) {
 	h, st := testServer(t)
 	seed(t, st)

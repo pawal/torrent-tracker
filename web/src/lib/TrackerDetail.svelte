@@ -1,9 +1,15 @@
 <script>
   import {
     getTracker, describe, fmtTime, fmtDate, describeNetwork, describeSoftware, flag,
+    probeLanes, axisTicks, fmtPercent,
   } from './api.js'
 
   let { name } = $props()
+
+  // How far back the reachability lanes reach. Refetching on a change keeps
+  // the server the one place that decides what the window contains.
+  const windows = [7, 30, 90]
+  let days = $state(30)
 
   let data = $state(null)
   let error = $state(null)
@@ -42,7 +48,7 @@
     let cancelled = false
     loading = true
     error = null
-    getTracker(name)
+    getTracker(name, days)
       .then((d) => !cancelled && (data = d))
       .catch((e) => !cancelled && (error = e.message))
       .finally(() => !cancelled && (loading = false))
@@ -77,6 +83,32 @@
       }),
     }
   })
+
+  // The axis is the server's window, not the browser's clock: the open probe
+  // interval was closed against the server's idea of now.
+  const axis = $derived.by(() => {
+    const from = new Date(data?.probe_history_from ?? 0).getTime()
+    if (!Number.isFinite(from) || from === 0) return null
+    return { from, now: from + days * 86_400_000 }
+  })
+
+  const lanes = $derived(axis ? probeLanes(data, axis.from, axis.now) : [])
+  const ticks = $derived(axis ? axisTicks(axis.from, axis.now) : [])
+
+  // Uptime across the whole name, weighted by measured time rather than by
+  // lane, so an address probed for one day does not count as much as one
+  // probed all month.
+  const uptime = $derived.by(() => {
+    const measured = lanes.reduce((n, l) => n + l.measured, 0)
+    if (measured === 0) return null
+    return lanes.reduce((n, l) => n + l.live, 0) / measured
+  })
+
+  function segTitle(lane, seg) {
+    const to = seg.open ? 'now' : fmtTime(new Date(seg.to).toISOString())
+    const why = seg.reason ? ` (${seg.reason})` : ''
+    return `${lane.endpoint} ${lane.ip}: ${seg.result}${why}\n${fmtTime(new Date(seg.from).toISOString())} → ${to}`
+  }
 </script>
 
 {#if error}
@@ -176,6 +208,75 @@
           </tbody>
         </table>
       </div>
+    {/if}
+  </div>
+
+  <div class="card">
+    <div class="detail-head">
+      <h2>Reachability history</h2>
+      {#if uptime !== null}
+        <span class="pill {uptime > 0.99 ? 'live' : uptime > 0.5 ? 'partial' : 'dead'}"
+              title="share of measured time this name answered on any address">
+          {fmtPercent(uptime)} answering
+        </span>
+      {/if}
+      <div class="window-pick">
+        {#each windows as d (d)}
+          <button class:on={days === d} onclick={() => (days = d)}>{d}d</button>
+        {/each}
+      </div>
+    </div>
+    {#if lanes.length === 0}
+      <p class="muted">
+        Nothing probed in the last {days} days. Verdicts are recorded from the
+        first probe onwards, so a name added recently has no history yet.
+      </p>
+    {:else}
+      <p class="sub">
+        One lane per endpoint and address. Blank means nobody asked: probing
+        starts when a name is added and stops when its address goes away.
+      </p>
+      <div class="lanes">
+        {#each lanes as lane (lane.key)}
+          <div class="lane">
+            <span class="lane-name" title="IPv{lane.family} on {lane.endpoint}">
+              <span class="lane-ep">{lane.endpoint}</span>
+              {lane.ip}
+              {#if lane.gone}<span class="rolling" title="no longer resolves, so no longer probed">gone</span>{/if}
+            </span>
+            <div class="band">
+              {#each ticks as t, i (i)}
+                <span class="tick" class:major={t.major} style="left:{t.left}%"></span>
+              {/each}
+              {#each lane.segments as seg, i (i)}
+                <span
+                  class="seg {seg.result}"
+                  style="left:{seg.left}%;width:{seg.width}%"
+                  title={segTitle(lane, seg)}
+                ></span>
+              {/each}
+            </div>
+            <span class="uptime" title="{fmtPercent(lane.uptime)} of measured time">
+              {fmtPercent(lane.uptime)}
+            </span>
+          </div>
+        {/each}
+        <div class="lane axis">
+          <span></span>
+          <div class="band ruler">
+            {#each ticks.filter((t) => t.major) as t, i (i)}
+              <span class="tick-label" style="left:{t.left}%">{t.label}</span>
+            {/each}
+          </div>
+          <span></span>
+        </div>
+      </div>
+      <p class="legend">
+        <span class="key live"></span> answers
+        <span class="key dead"></span> does not answer
+        <span class="key unknown"></span> probed, no verdict
+        <span class="key none"></span> not probed
+      </p>
     {/if}
   </div>
 

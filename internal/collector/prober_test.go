@@ -395,6 +395,79 @@ func TestProberFanoutKeepsVerdictsWithTheirTarget(t *testing.T) {
 	}
 }
 
+// A pass that flips a verdict has to leave the previous stretch behind, or the
+// tracker page can only ever show the present. Two passes with the checker
+// switched off in between is the smallest way to see that.
+func TestProberRecordsHistoryAcrossPasses(t *testing.T) {
+	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
+		[][2]any{{"udp", 6969}})
+	f.checker.results["udp:6969 1.2.3.4"] = live()
+	f.run(t)
+
+	// Silence, twice, because one missed round is not yet death.
+	delete(f.checker.results, "udp:6969 1.2.3.4")
+	f.now = f.now.Add(6 * time.Hour)
+	f.run(t)
+	f.now = f.now.Add(6 * time.Hour)
+	f.run(t)
+
+	got, err := f.store.ProbeHistoryFor(context.Background(), f.tracker.ID,
+		f.now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d closed intervals, want 1: %+v", len(got), got)
+	}
+	if got[0].Result != store.ProbeLive {
+		t.Errorf("archived result = %q, want live", got[0].Result)
+	}
+	// The live stretch has to cover the whole time it was believed live,
+	// including the round that missed but had not yet crossed the threshold.
+	if want := 12 * time.Hour; got[0].Until.Sub(got[0].Since) != want {
+		t.Errorf("live interval lasted %s, want %s", got[0].Until.Sub(got[0].Since), want)
+	}
+}
+
+// Retention is what keeps the table bounded, and the probing loop is the only
+// thing that runs often enough to apply it.
+func TestProberPrunesHistoryPastRetention(t *testing.T) {
+	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
+		[][2]any{{"udp", 6969}})
+	f.prober.Retention = 24 * time.Hour
+	f.checker.results["udp:6969 1.2.3.4"] = live()
+	f.run(t)
+
+	// Go dead, closing the live interval, then jump past the retention window
+	// and probe once more so the loop gets a chance to sweep.
+	delete(f.checker.results, "udp:6969 1.2.3.4")
+	f.now = f.now.Add(time.Hour)
+	f.run(t)
+	f.now = f.now.Add(time.Hour)
+	f.run(t)
+
+	before, err := f.store.ProbeHistoryFor(context.Background(), f.tracker.ID, f.now.AddDate(-1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("got %d closed intervals before the sweep, want 1", len(before))
+	}
+
+	f.now = f.now.Add(48 * time.Hour)
+	f.run(t)
+
+	after, err := f.store.ProbeHistoryFor(context.Background(), f.tracker.ID, f.now.AddDate(-1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iv := range after {
+		if iv.Until.Before(f.now.Add(-24 * time.Hour)) {
+			t.Errorf("interval ending %s survived a 24h retention", iv.Until)
+		}
+	}
+}
+
 func TestSummarise(t *testing.T) {
 	endpoints := []store.Endpoint{
 		{ID: 1, Scheme: "udp", Port: 6969},

@@ -674,6 +674,156 @@ td.col-name {
   }
 }
 
+/* --- reachability lanes ------------------------------------------------ */
+/* One lane per endpoint and address, on a fixed window rather than the span
+   of the data, so two trackers can be compared side by side. Bare band means
+   nobody probed: an absence of questions, not an absence of answers. */
+
+.lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lane {
+  display: grid;
+  grid-template-columns: 21rem 1fr 3rem;
+  gap: var(--space-3);
+  align-items: center;
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+}
+.lane-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lane-ep {
+  color: var(--muted);
+  margin-right: 6px;
+}
+.lane .band {
+  position: relative;
+  height: 13px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.lane .seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  background: var(--muted);
+  z-index: 1;
+}
+.lane .seg.live {
+  background: var(--grade-a);
+}
+.lane .seg.dead {
+  background: var(--grade-f);
+}
+/* A probe that told us nothing must not read as a verdict, so it stays grey
+   rather than joining the red-green scale — but solid, because it still has to
+   be told apart from the bare band behind it, which is time nobody probed. */
+.lane .seg.unknown {
+  background: var(--muted);
+}
+/* The day grid sits under the verdicts, so it shows through only where the
+   band is bare and never breaks a run of one colour into stripes. */
+.lane .tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  opacity: 0.5;
+}
+.lane .tick.major {
+  opacity: 0.9;
+}
+.lane .uptime {
+  color: var(--ink-2);
+  text-align: right;
+}
+.lane.axis .band {
+  height: 1.1rem;
+  background: none;
+  border: none;
+  overflow: visible;
+}
+.lane.axis .tick-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.window-pick {
+  display: flex;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.window-pick button {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.window-pick button.on {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-3) 0 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+.legend .key {
+  display: inline-block;
+  width: 22px;
+  height: 10px;
+  border-radius: 2px;
+  margin-left: var(--space-3);
+  vertical-align: middle;
+}
+.legend .key:first-child {
+  margin-left: 0;
+}
+.legend .key.live {
+  background: var(--grade-a);
+}
+.legend .key.dead {
+  background: var(--grade-f);
+}
+.legend .key.unknown {
+  background: var(--muted);
+}
+.legend .key.none {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+}
+@media (width <= 700px) {
+  .lane {
+    grid-template-columns: 1fr 3rem;
+  }
+  .lane .band {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .lane.axis .band {
+    grid-row: 1;
+  }
+}
+
 /* --- controls ---------------------------------------------------------- */
 
 .controls {

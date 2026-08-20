@@ -164,6 +164,11 @@ type trackerDetail struct {
 	Info      map[string]store.IPInfo `json:"info"`
 	Endpoints []store.Endpoint        `json:"endpoints"`
 	Probes    []store.Probe           `json:"probes"`
+	// History holds the closed probe intervals inside the requested window.
+	// The open interval is the matching row in Probes, so the two together
+	// cover the axis with no gap.
+	History     []store.ProbeInterval `json:"probe_history"`
+	HistoryFrom time.Time             `json:"probe_history_from"`
 }
 
 func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
@@ -203,9 +208,16 @@ func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	from := time.Now().UTC().AddDate(0, 0, -intParam(r, "days", 30))
+	history, err := s.Store.ProbeHistoryFor(r.Context(), t.ID, from)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, trackerDetail{
 		Tracker: t, Records: records, Changes: changes, Info: info,
 		Endpoints: endpoints, Probes: probes,
+		History: history, HistoryFrom: from,
 	})
 }
 

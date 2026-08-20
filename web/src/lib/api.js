@@ -15,11 +15,129 @@ async function get(path) {
 
 export const getStats = () => get('/api/stats')
 export const getTrackers = () => get('/api/trackers')
-export const getTracker = (name) => get(`/api/trackers/${encodeURIComponent(name)}`)
+export const getTracker = (name, days = 30) =>
+  get(`/api/trackers/${encodeURIComponent(name)}?days=${days}`)
 export const getChanges = (limit = 200) => get(`/api/changes?limit=${limit}`)
 export const getRuns = (limit = 10) => get(`/api/runs?limit=${limit}`)
 export const getNetworks = (limit = 20) => get(`/api/networks?limit=${limit}`)
 export const getVersion = () => get('/api/version')
+
+/**
+ * Lay the probe verdicts out per address on a shared time axis, one lane per
+ * (endpoint, address). Closed intervals come from probe_history and the one
+ * still open is the row in probes, so together they cover the window with no
+ * seam. Time inside no interval is left blank: nobody probed then, which is
+ * not the same as having probed and learnt nothing.
+ */
+export function probeLanes(data, from, now) {
+  const span = now - from
+  if (!(span > 0)) return []
+
+  const endpoints = new Map((data?.endpoints ?? []).map((e) => [e.id, e]))
+  const lanes = new Map()
+
+  function laneFor(endpointID, ip, family) {
+    const key = `${endpointID}|${ip}`
+    let lane = lanes.get(key)
+    if (!lane) {
+      const e = endpoints.get(endpointID)
+      lane = {
+        key,
+        ip,
+        family,
+        endpoint: e ? `${e.scheme}:${e.port}` : `#${endpointID}`,
+        scheme: e?.scheme ?? '',
+        port: e?.port ?? 0,
+        segments: [],
+        live: 0,
+        measured: 0,
+        result: '',
+      }
+      lanes.set(key, lane)
+    }
+    return lane
+  }
+
+  function push(lane, iv, until, open) {
+    const a = Math.max(new Date(iv.since).getTime(), from)
+    const b = Math.min(until, now)
+    if (!(b > a)) return
+    // Unknown abstains from the uptime figure the same way it abstains from
+    // the reachability rollup: it is an absence of evidence, not a fault.
+    if (iv.result === 'live' || iv.result === 'dead') {
+      lane.measured += b - a
+      if (iv.result === 'live') lane.live += b - a
+    }
+    lane.segments.push({
+      result: iv.result,
+      reason: iv.reason ?? '',
+      from: a,
+      to: b,
+      open,
+      left: ((a - from) / span) * 100,
+      width: ((b - a) / span) * 100,
+    })
+  }
+
+  for (const iv of data?.probe_history ?? []) {
+    push(laneFor(iv.endpoint_id, iv.ip, iv.family), iv, new Date(iv.until).getTime(), false)
+  }
+  for (const p of data?.probes ?? []) {
+    const lane = laneFor(p.endpoint_id, p.ip, p.family)
+    lane.result = p.result
+    lane.since = p.since
+    push(lane, p, now, true)
+  }
+
+  const out = [...lanes.values()].filter((l) => l.segments.length > 0)
+  for (const lane of out) {
+    lane.segments.sort((a, b) => a.from - b.from)
+    lane.uptime = lane.measured > 0 ? lane.live / lane.measured : null
+    // No open interval means the address stopped resolving and is no longer
+    // probed, so its lane ends before the right edge.
+    lane.gone = lane.result === ''
+  }
+  out.sort(
+    (a, b) =>
+      a.scheme.localeCompare(b.scheme) ||
+      a.port - b.port ||
+      a.family - b.family ||
+      a.ip.localeCompare(b.ip),
+  )
+  return out
+}
+
+const DAY = 86_400_000
+
+/**
+ * Day-boundary ticks for a timeline, labelling roughly `labels` of them. Long
+ * windows drop the unlabelled days: 90 hairlines read as a texture, not a grid.
+ */
+export function axisTicks(from, now, labels = 6) {
+  const span = now - from
+  if (!(span > 0)) return []
+  const days = Math.max(Math.round(span / DAY), 1)
+  const every = Math.max(Math.ceil(days / labels), 1)
+
+  const ticks = []
+  let i = 0
+  for (let t = Math.ceil(from / DAY) * DAY; t <= now; t += DAY, i++) {
+    const major = i % every === 0
+    if (!major && days > 45) continue
+    ticks.push({
+      left: ((t - from) / span) * 100,
+      major,
+      label: major ? new Date(t).toISOString().slice(5, 10) : '',
+    })
+  }
+  return ticks
+}
+
+/** A share as a whole-number percentage, or a dash when nothing was measured. */
+export function fmtPercent(share) {
+  if (share === null || share === undefined) return '-'
+  return `${Math.round(share * 100)}%`
+}
 
 /** Render a network as "AS13335 Cloudflare, Inc." */
 export function describeNetwork(n) {

@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -196,7 +198,10 @@ func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error)
 
 // PutProbes replaces the results for the given endpoints in one transaction.
 // Addresses not probed this round are dropped; probes describe the present.
-func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Probe) error {
+// A verdict the round replaces is first appended to probe_history, so the open
+// interval kept here is the only one that is ever overwritten. now closes the
+// intervals of addresses that stopped being probed altogether.
+func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Probe, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -209,6 +214,12 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 			keep[p.EndpointID] = map[string]bool{}
 		}
 		keep[p.EndpointID][p.IP] = true
+
+		// merge keeps Since when the verdict stands, so a moved Since is
+		// exactly the signal that the previous interval has ended.
+		if err := archiveProbe(ctx, tx, p.EndpointID, p.IP, p.Since); err != nil {
+			return err
+		}
 
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO probes (endpoint_id, ip, family, result, reason, rtt_ms, miss_count,
@@ -246,6 +257,9 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 			return err
 		}
 		for _, ip := range stale {
+			if err := archiveProbe(ctx, tx, id, ip, now); err != nil {
+				return err
+			}
 			if _, err := tx.ExecContext(ctx,
 				`DELETE FROM probes WHERE endpoint_id = ? AND ip = ?`, id, ip); err != nil {
 				return err
@@ -253,6 +267,99 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 		}
 	}
 	return tx.Commit()
+}
+
+// ProbeInterval is one stretch of time an address held one verdict on one
+// endpoint. Closed intervals come from probe_history; the open one is the row
+// still in probes, which is why Until is a pointer.
+type ProbeInterval struct {
+	EndpointID int64       `json:"endpoint_id"`
+	IP         string      `json:"ip"`
+	Family     int         `json:"family"`
+	Result     ProbeResult `json:"result"`
+	Reason     string      `json:"reason,omitempty"`
+	Since      time.Time   `json:"since"`
+	Until      time.Time   `json:"until"`
+}
+
+// archiveProbe closes the stored interval for one address, copying it into
+// probe_history. A verdict that has not moved has since == until and is not
+// worth a row, and an address probed for the first time has nothing to close.
+func archiveProbe(ctx context.Context, tx *sql.Tx, endpointID int64, ip string, until time.Time) error {
+	var (
+		family         int
+		result, reason string
+		since          string
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT family, result, reason, since FROM probes
+		WHERE endpoint_id = ? AND ip = ?`, endpointID, ip).Scan(&family, &result, &reason, &since)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read probe %d/%s: %w", endpointID, ip, err)
+	}
+	started, err := parseTime(since)
+	if err != nil {
+		return err
+	}
+	if !started.Before(until) {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO probe_history (endpoint_id, ip, family, result, reason, since, until)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		endpointID, ip, family, result, reason, since, fmtTime(until)); err != nil {
+		return fmt.Errorf("archive probe %d/%s: %w", endpointID, ip, err)
+	}
+	return nil
+}
+
+// ProbeHistoryFor returns a tracker's closed probe intervals that overlap the
+// window starting at since, oldest first. Intervals still open live in probes
+// and are not repeated here.
+func (s *Store) ProbeHistoryFor(ctx context.Context, trackerID int64, since time.Time) ([]ProbeInterval, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT h.endpoint_id, h.ip, h.family, h.result, h.reason, h.since, h.until
+		FROM probe_history h JOIN endpoints e ON e.id = h.endpoint_id
+		WHERE e.tracker_id = ? AND h.until >= ?
+		ORDER BY h.endpoint_id, h.ip, h.id`, trackerID, fmtTime(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ProbeInterval{}
+	for rows.Next() {
+		var (
+			iv           ProbeInterval
+			start, until string
+		)
+		if err := rows.Scan(&iv.EndpointID, &iv.IP, &iv.Family, &iv.Result, &iv.Reason,
+			&start, &until); err != nil {
+			return nil, err
+		}
+		if iv.Since, err = parseTime(start); err != nil {
+			return nil, err
+		}
+		if iv.Until, err = parseTime(until); err != nil {
+			return nil, err
+		}
+		out = append(out, iv)
+	}
+	return out, rows.Err()
+}
+
+// PruneProbeHistory drops intervals that ended before cutoff, so the table
+// stays bounded by the retention window rather than by uptime.
+func (s *Store) PruneProbeHistory(ctx context.Context, cutoff time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM probe_history WHERE until < ?`, fmtTime(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("prune probe history: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // SetReach records a tracker's reachability, appending a change when the

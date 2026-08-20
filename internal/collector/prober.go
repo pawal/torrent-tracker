@@ -40,6 +40,9 @@ type Prober struct {
 	// SamplePerFamily caps how many addresses of a rolling family are probed.
 	// Defaults to 2; the rest are interchangeable and gone by next round.
 	SamplePerFamily int
+	// Retention is how long closed probe intervals are kept. Defaults to 90
+	// days, three times the month the UI draws.
+	Retention time.Duration
 	// Now is overridable for tests.
 	Now func() time.Time
 }
@@ -96,6 +99,13 @@ func (p *Prober) samplePerFamily() int {
 		return p.SamplePerFamily
 	}
 	return 2
+}
+
+func (p *Prober) retention() time.Duration {
+	if p.Retention > 0 {
+		return p.Retention
+	}
+	return 90 * 24 * time.Hour
 }
 
 func (p *Prober) probe() Checker {
@@ -167,6 +177,12 @@ func (p *Prober) RunOnce(ctx context.Context) (ProbeSummary, error) {
 	}
 	wg.Wait()
 
+	if n, err := p.Store.PruneProbeHistory(ctx, p.now().Add(-p.retention())); err != nil {
+		p.log().Error("prune probe history", "err", err)
+	} else if n > 0 {
+		p.log().Info("pruned probe history", "rows", n)
+	}
+
 	sum.Duration = p.now().Sub(start)
 	p.log().Info("probing finished",
 		"trackers", sum.Trackers, "probes", sum.Probes, "live", sum.Live,
@@ -235,7 +251,7 @@ func (p *Prober) probeOne(ctx context.Context, t store.ProbeTarget) (store.Reach
 		return "", 0, false, err
 	}
 
-	if err := p.Store.PutProbes(ctx, ids, probes); err != nil {
+	if err := p.Store.PutProbes(ctx, ids, probes, now); err != nil {
 		return "", 0, false, err
 	}
 	reach := store.RollUp(probes)

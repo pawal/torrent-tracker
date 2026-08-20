@@ -184,6 +184,36 @@ Only the rollup reaches the change feed — `tracker_up`, `tracker_down` and
 `tracker_partial` — because per-address transitions on a CDN-fronted name would
 flood it. The per-endpoint, per-address detail lives on the tracker page.
 
+**A verdict that changes is kept, not overwritten.** The `probes` table holds
+one row per (endpoint, address) and describes the present, so a tracker that
+went dead last Tuesday would leave no trace of the week it was working. Each
+time a verdict moves, the stretch it replaces is appended to `probe_history` as
+a closed interval — the same shape `ip_records` uses for addresses, and for the
+same reason: a tracker that answers for a month is one row, not one row per
+pass. The open interval stays in `probes`, so the two together cover the axis
+with no seam.
+
+The tracker page draws that as one lane per endpoint and address over a fixed
+7, 30 or 90 day window:
+
+```
+http:80   104.21.72.244              ████████░░████████████████████   77%
+http:80   2606:4700:3032::6815:48f4  ██████░░░░░░████████         ▒▒  65%  gone
+udp:6969  104.21.72.244              ██████████████████░░██████████   88%
+udp:6969  172.67.136.175                            ▒▒▒▒████████████  77%
+```
+
+Blank is time nobody asked, which is not the same as asking and learning
+nothing: probing starts when a name is added and stops when its address goes
+away, and an `unknown` verdict draws grey rather than joining the red-green
+scale. The percentage is the share of *measured* time the address answered, so
+an unprobed week neither helps nor hurts it — the same abstention rule the
+rollup uses.
+
+`--probe-retention` (default 90 days) bounds the table. Closed intervals older
+than that are swept at the end of each probing pass, so the storage follows the
+retention window rather than uptime.
+
 ### What software is answering
 
 No tracker discloses a version, and BEP 15 has nowhere to put one. But the HTTP
@@ -343,8 +373,8 @@ takes `--addr`, `--interval` and `--no-collect`.
 
 Probing flags (`probe`, `poll` and `serve`): `--probe-timeout`,
 `--probe-workers`, `--probe-fanout`, `--probe-miss-threshold`,
-`--probe-sample`. `poll` and `serve` additionally take `--probe`, and `serve`
-takes `--probe-interval`.
+`--probe-sample`, `--probe-retention`. `poll` and `serve` additionally take
+`--probe`, and `serve` takes `--probe-interval`.
 
 `--probe-workers` (default 8) is how many trackers are probed at once;
 `--probe-fanout` (default 4) is how many of one tracker's endpoint-and-address
@@ -377,7 +407,7 @@ needs no authentication.
 | --- | --- |
 | `GET /api/stats` | counters and the last run |
 | `GET /api/trackers` | all trackers with their live addresses (`?all=1` includes removed) |
-| `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info and per-endpoint probe results |
+| `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info, per-endpoint probe results and their history (`?days=N`, default 30) |
 | `GET /api/changes` | the change feed (`?since=RFC3339&limit=N`) |
 | `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software |
 | `GET /api/runs` | recent collection runs |

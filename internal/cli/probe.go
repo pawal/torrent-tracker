@@ -25,6 +25,7 @@ type probeFlags struct {
 	fanout    int
 	threshold int
 	sample    int
+	retention time.Duration
 }
 
 func (pf *probeFlags) register(fs *flag.FlagSet, withEnable bool) {
@@ -37,6 +38,8 @@ func (pf *probeFlags) register(fs *flag.FlagSet, withEnable bool) {
 	fs.IntVar(&pf.threshold, "probe-miss-threshold", 2,
 		"consecutive failures before an endpoint is called dead")
 	fs.IntVar(&pf.sample, "probe-sample", 2, "addresses probed per rolling family")
+	fs.DurationVar(&pf.retention, "probe-retention", 90*24*time.Hour,
+		"how long closed reachability intervals are kept")
 }
 
 // registerInterval adds the scheduling flag, which only the long-running
@@ -56,6 +59,7 @@ func (pf *probeFlags) build(st *store.Store, res resolver.Resolver, log *slog.Lo
 		Fanout:          pf.fanout,
 		MissThreshold:   pf.threshold,
 		SamplePerFamily: pf.sample,
+		Retention:       pf.retention,
 	}
 }
 

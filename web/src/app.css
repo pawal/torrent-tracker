@@ -44,7 +44,7 @@
   --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
   --sans: "IBM Plex Sans", "Source Sans 3", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 
-  /* Content column; the header aligns to it via 50vw - half this width.
+  /* Content column; the header aligns to it via 50% - half this width.
      Wider than gonemaster's 760px because the tracker table carries two
      address columns, and a v6 literal alone wants ~300px. */
   --content: 1200px;
@@ -127,14 +127,12 @@ header.top {
   gap: var(--space-4);
   height: 72px;
   margin: 0;
-  padding: 0 max(var(--space-6), calc(50vw - var(--content-half)));
+  /* Full-bleed already, being a block child of the body; the padding is what
+     lines the contents up with the centred column. Percentages, not vw, so a
+     vertical scrollbar cannot push the bar wider than the viewport. */
+  padding: 0 max(var(--space-6), calc(50% - var(--content-half)));
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  /* Full-bleed bar whose contents still line up with the centred column. */
-  position: relative;
-  left: 50%;
-  width: 100vw;
-  transform: translateX(-50%);
 }
 
 .brand {

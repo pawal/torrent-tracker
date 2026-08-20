@@ -1,7 +1,7 @@
 <script>
   import {
     getTracker, describe, fmtTime, fmtDate, describeNetwork, describeSoftware, flag,
-    probeLanes, resolutionLane, axisTicks, fmtPercent,
+    probeLanes, resolutionLane, addressLanes, axisTicks, fmtPercent,
   } from './api.js'
 
   let { name } = $props()
@@ -9,6 +9,11 @@
   // How far back the lanes reach; the server decides what a window contains.
   const windows = [7, 30, 90]
   let days = $state(30)
+
+  // A rolling name retires a dozen addresses a day, so the list is capped
+  // until asked for in full.
+  const addressCap = 25
+  let allAddresses = $state(false)
 
   let data = $state(null)
   let error = $state(null)
@@ -54,35 +59,6 @@
     return () => (cancelled = true)
   })
 
-  // Lay every address interval out on a shared time axis. Open intervals run
-  // to "now" so a currently-live address reaches the right edge.
-  const timeline = $derived.by(() => {
-    const records = data?.records ?? []
-    if (records.length === 0) return null
-
-    const now = Date.now()
-    const starts = records.map((r) => new Date(r.first_seen).getTime())
-    const ends = records.map((r) => (r.active ? now : new Date(r.last_seen).getTime()))
-    const min = Math.min(...starts)
-    let max = Math.max(...ends, now)
-    // A single-poll database has zero width; give it an hour so bars show.
-    if (max - min < 3600_000) max = min + 3600_000
-    const span = max - min
-
-    return {
-      min,
-      rows: records.map((r) => {
-        const s = new Date(r.first_seen).getTime()
-        const e = r.active ? now : new Date(r.last_seen).getTime()
-        return {
-          ...r,
-          left: ((s - min) / span) * 100,
-          width: Math.max(((e - s) / span) * 100, 0.6),
-        }
-      }),
-    }
-  })
-
   // The server's window, not the browser's clock: the open interval ends at
   // the server's now.
   const axis = $derived.by(() => {
@@ -94,6 +70,10 @@
   const lanes = $derived(axis ? probeLanes(data, axis.from, axis.now) : [])
   const dns = $derived(axis ? resolutionLane(data, axis.from, axis.now) : null)
   const ticks = $derived(axis ? axisTicks(axis.from, axis.now) : [])
+  const addresses = $derived(axis ? addressLanes(data, axis.from, axis.now) : [])
+  const shownAddresses = $derived(
+    allAddresses ? addresses : addresses.slice(0, addressCap),
+  )
 
   // Weighted by measured time, not by lane: a day-old address counts less.
   const uptime = $derived.by(() => {
@@ -330,30 +310,68 @@
   </div>
 
   <div class="card">
-    <h2>Address history</h2>
-    {#if !timeline}
+    <div class="detail-head">
+      <h2>Address history</h2>
+      {#if addresses.length > addressCap}
+        <span class="pill unchecked" title="in the last {days} days">
+          {addresses.length} addresses
+        </span>
+      {/if}
+    </div>
+    {#if data.records.length === 0}
       <p class="muted">No addresses have ever been recorded for this name.</p>
+    {:else if addresses.length === 0}
+      <p class="muted">
+        Nothing in the last {days} days. This name has
+        {data.records.length} older address {data.records.length === 1 ? 'record' : 'records'};
+        widen the window above to reach them.
+      </p>
     {:else}
       <p class="sub">
-        {fmtDate(new Date(timeline.min).toISOString())} → today. Green bars are live now.
+        The same window as the history above. Green is live now.
+        {#if addresses.length > shownAddresses.length}
+          Showing the {addressCap} most recent of {addresses.length}.
+        {/if}
       </p>
-      <div class="timeline">
-        {#each timeline.rows as r (r.id)}
+      <div class="lanes">
+        {#each shownAddresses as r (r.key)}
           {@const n = data.info?.[r.ip]}
-          <div class="track">
-            <span title="IPv{r.family}">
+          <div class="lane">
+            <span class="lane-name" title="IPv{r.family}">
               {r.ip}
+              {#if r.is_prefix}<span class="rolling" title={rollTitle}>rolling</span>{/if}
               {#if n?.asn}<span class="net-tag">AS{n.asn} {flag(n.country)}</span>{/if}
             </span>
-            <div
-              class="bar-area"
-              title="{fmtTime(r.first_seen)} → {r.active ? 'now' : fmtTime(r.last_seen)}"
-            >
-              <div class="bar" class:active={r.active} style="left:{r.left}%;width:{r.width}%"></div>
+            <div class="band">
+              {#each ticks as t, i (i)}
+                <span class="tick" class:major={t.major} style="left:{t.left}%"></span>
+              {/each}
+              <span
+                class="seg {r.active ? 'live' : 'gone'}"
+                style="left:{r.left}%;width:{r.width}%"
+                title="{fmtTime(r.first_seen)} → {r.active ? 'now' : fmtTime(r.last_seen)}"
+              ></span>
             </div>
+            <span class="uptime">{r.active ? 'live' : 'gone'}</span>
           </div>
         {/each}
+        <div class="lane axis">
+          <span></span>
+          <div class="band ruler">
+            {#each ticks.filter((t) => t.major) as t, i (i)}
+              <span class="tick-label" style="left:{t.left}%">{t.label}</span>
+            {/each}
+          </div>
+          <span></span>
+        </div>
       </div>
+      {#if addresses.length > addressCap}
+        <p class="sub">
+          <button class="link" onclick={() => (allAddresses = !allAddresses)}>
+            {allAddresses ? `show only the ${addressCap} most recent` : `show all ${addresses.length}`}
+          </button>
+        </p>
+      {/if}
 
       <div class="scroll">
         <table>
@@ -369,7 +387,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each data.records as r (r.id)}
+            {#each shownAddresses as r (r.key)}
               {@const n = data.info?.[r.ip]}
               <tr>
                 <td class="mono nowrap">

@@ -224,7 +224,16 @@ udp:6969  172.67.136.175                            ▒▒▒▒█████�
 One axis rather than two cards, because the useful question spans both: a name
 that stopped answering *while resolving perfectly* is a dead tracker, and one
 that stopped answering *when its DNS went SERVFAIL* is a broken delegation.
-Reading down a column says which.
+Reading down a column says which. The address history below runs on the same
+window and the same axis, so the third row of the question — *which* address it
+was answering on — lines up with the other two.
+
+The window is what makes the address history readable at all. Drawn over the
+span of the data, a rolling name is unusable: `p4p.arenabg.com` has 113 address
+records, so its timeline was 113 one-hour slivers with no scale. On a fixed
+window, records that ended before it opened are simply not drawn, live ones sort
+first and retired ones by how recently they went, and the list caps at the 25
+most recent until asked for in full.
 
 Blank is time nobody asked, which is not the same as asking and learning
 nothing: probing starts when a name is added and stops when its address goes

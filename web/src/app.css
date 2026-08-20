@@ -636,44 +636,6 @@ td.col-name {
   margin: 0 6px;
 }
 
-.timeline {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.track {
-  display: grid;
-  grid-template-columns: 25rem 1fr;
-  gap: var(--space-3);
-  align-items: center;
-  font-family: var(--mono);
-  font-size: var(--text-xs);
-}
-.track .bar-area {
-  position: relative;
-  height: 14px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-.track .bar {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  min-width: 3px;
-  border-radius: 3px;
-  background: var(--muted);
-}
-.track .bar.active {
-  background: var(--grade-a);
-}
-@media (width <= 700px) {
-  .track {
-    grid-template-columns: 1fr;
-    gap: var(--space-1);
-  }
-}
-
 /* --- reachability lanes ------------------------------------------------ */
 /* One lane per endpoint and address, on a fixed window rather than the span
    of the data, so two trackers can be compared side by side. Bare band means
@@ -686,7 +648,7 @@ td.col-name {
 }
 .lane {
   display: grid;
-  grid-template-columns: 21rem 1fr 3rem;
+  grid-template-columns: 24rem 1fr 3rem;
   gap: var(--space-3);
   align-items: center;
   font-family: var(--mono);
@@ -722,6 +684,10 @@ td.col-name {
 }
 .lane .seg.dead {
   background: var(--grade-f);
+}
+/* A retired address is history, not a fault, so it stays out of the scale. */
+.lane .seg.gone {
+  background: var(--muted);
 }
 /* Grey, not part of the red-green scale: a probe that told us nothing is not a
    verdict. Solid, so it reads apart from the bare band behind it. */
@@ -801,6 +767,15 @@ td.col-name {
 .window-pick button.on {
   background: var(--surface-2);
   color: var(--ink);
+}
+button.link {
+  font: inherit;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-2);
+  cursor: pointer;
+  text-decoration: underline;
 }
 .legend + .legend {
   margin-top: var(--space-1);

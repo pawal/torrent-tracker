@@ -134,6 +134,35 @@ export function resolutionLane(data, from, now) {
   return lane
 }
 
+/**
+ * Address intervals on the same axis as the probe lanes, live ones first and
+ * then the most recently retired. Anything that ended before the window opened
+ * is dropped: on a rolling name that is most of the table.
+ */
+export function addressLanes(data, from, now) {
+  const span = now - from
+  if (!(span > 0)) return []
+
+  const out = []
+  for (const r of data?.records ?? []) {
+    const a = Math.max(new Date(r.first_seen).getTime(), from)
+    const b = Math.min(r.active ? now : new Date(r.last_seen).getTime(), now)
+    if (b < a) continue
+    out.push({
+      ...r,
+      key: r.id,
+      from: a,
+      to: b,
+      left: ((a - from) / span) * 100,
+      width: ((b - a) / span) * 100,
+    })
+  }
+  out.sort(
+    (x, y) => Number(y.active) - Number(x.active) || y.to - x.to || x.ip.localeCompare(y.ip),
+  )
+  return out
+}
+
 const DAY = 86_400_000
 
 /**

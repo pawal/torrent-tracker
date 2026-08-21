@@ -93,10 +93,16 @@ func TestListEndpointsExcludesNonTrackers(t *testing.T) {
 	parkedID, _ := newListTracker(t, s, "parked.example.com", base, "udp", 6969, "1.2.3.5")
 	newListTracker(t, s, "gone.example.com", base, "udp", 6969, "1.2.3.6")
 	newListTracker(t, s, "canary.example.com", base, "udp", 6969, "1.2.3.7")
+	denyID, _ := newListTracker(t, s, "denies.example.com", base, "udp", 6969, "1.2.3.8")
 
 	// A parked domain resolves perfectly and answers nothing, so it would sail
 	// through any DNS-based filter. It must never reach a client.
 	if _, err := s.SetParked(ctx, parkedID, true, "parking address", base); err != nil {
+		t.Fatal(err)
+	}
+	// Handing out a URL for a host that published "no trackers here" would be
+	// the loudest possible way of ignoring it.
+	if _, err := s.SetBEP34(ctx, denyID, "BITTORRENT", true, base); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RemoveTracker(ctx, "gone.example.com", false); err != nil {

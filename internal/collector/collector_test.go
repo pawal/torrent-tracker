@@ -277,8 +277,9 @@ func TestRunOnceSkipsDisabledTrackers(t *testing.T) {
 	if sum.Trackers != 1 {
 		t.Errorf("polled %d trackers, want 1 (the disabled one must be skipped)", sum.Trackers)
 	}
-	if got := fake.callCount(); got != 2 { // A + AAAA for one tracker
-		t.Errorf("made %d lookups, want 2", got)
+	// A, AAAA and the BEP 34 TXT record, for the one enabled tracker.
+	if got := fake.callCount(); got != 3 {
+		t.Errorf("made %d lookups, want 3", got)
 	}
 }
 

@@ -347,9 +347,10 @@ main {
   color: #991b1b;
   background: #fee2e2;
 }
-/* Parked and rolling are notes about the record, not the resolver, so they
-   stay muted rather than joining the status colour scale. */
-.pill.parked {
+/* Parked, denies and rolling are notes about the record, not the resolver, so
+   they stay muted rather than joining the status colour scale. */
+.pill.parked,
+.pill.denies {
   color: var(--ink-2);
   background: none;
   border: 1px dashed var(--border);

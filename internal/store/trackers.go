@@ -12,7 +12,7 @@ import (
 var ErrNotFound = errors.New("tracker not found")
 
 const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at,
-	control, parked, reach, reach_checked_at`
+	control, parked, reach, reach_checked_at, bep34, bep34_denies`
 
 func scanTracker(sc interface{ Scan(...any) error }) (Tracker, error) {
 	var (
@@ -22,7 +22,7 @@ func scanTracker(sc interface{ Scan(...any) error }) (Tracker, error) {
 		reachCheck sql.NullString
 	)
 	if err := sc.Scan(&t.ID, &t.Name, &t.Source, &t.Enabled, &created, &t.LastStatus, &lastCheck,
-		&t.Control, &t.Parked, &t.Reach, &reachCheck); err != nil {
+		&t.Control, &t.Parked, &t.Reach, &reachCheck, &t.BEP34, &t.BEP34Denies); err != nil {
 		return t, err
 	}
 	var err error
@@ -188,6 +188,41 @@ func (s *Store) SetParked(ctx context.Context, trackerID int64, parked bool, det
 		if err := insertChangeNullIP(ctx, tx, trackerID, fmtTime(now), ChangeParked, detail); err != nil {
 			return false, err
 		}
+	}
+	return true, tx.Commit()
+}
+
+// SetBEP34 records the tracker preferences a name publishes, reporting whether
+// they moved. Withdrawing a record is as much news as publishing one.
+func (s *Store) SetBEP34(ctx context.Context, trackerID int64, record string, denies bool, now time.Time) (bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var was string
+	if err := tx.QueryRowContext(ctx, `SELECT bep34 FROM trackers WHERE id = ?`, trackerID).Scan(&was); err != nil {
+		return false, err
+	}
+	if was == record {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE trackers SET bep34 = ?, bep34_denies = ? WHERE id = ?`,
+		record, denies, trackerID); err != nil {
+		return false, err
+	}
+
+	kind, detail := ChangeBEP34Changed, was+" -> "+record
+	switch {
+	case was == "":
+		kind, detail = ChangeBEP34Added, record
+	case record == "":
+		kind, detail = ChangeBEP34Removed, was
+	}
+	if err := insertChangeNullIP(ctx, tx, trackerID, fmtTime(now), kind, detail); err != nil {
+		return false, err
 	}
 	return true, tx.Commit()
 }

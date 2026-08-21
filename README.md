@@ -257,6 +257,55 @@ and `--lookup-retention` (both 90 days) sweep at the end of each probing and
 collection pass. `lookups` in particular was growing without bound — one row
 per tracker per pass is about 200k rows a month on a 300-name registry.
 
+### When the host says no
+
+BEP 34 lets a tracker's own hostname say where it runs, in a TXT record on the
+name we are already resolving:
+
+```
+tracker.opentrackr.org.   TXT  "BITTORRENT UDP:1337 TCP:1337"
+tracker.skynetcloud.site. TXT  "BITTORRENT DENY ALL"
+```
+
+The keyword opens the record and the words after it name the endpoints, most
+preferred first. A record naming none says the host runs no trackers, which is
+the closest thing the protocol has to an opt-out — there is no DENY keyword, so
+`DENY ALL` means what a bare `BITTORRENT` means: those are two unrecognised
+words, and unrecognised words are ignored by design.
+
+This is worth honouring for its own sake, and it is the one thing a tracker
+operator can do to be left alone by a monitor that never announces. A denying
+host stops being probed, drops off every client list, and has its open probe
+intervals closed rather than left to imply we are still measuring it.
+
+**It flags rather than deletes, which is where this parts company with
+newTrackon**, whose denial removes the tracker outright. The spec's own security
+note is the reason: an ISP can block a tracker by injecting the record. Deleting
+on the strength of one DNS answer would let anyone in the resolution path erase
+history, so the name, its addresses and everything measured before it are kept
+and the reason is shown on its page.
+
+**A UDP preference is adopted as an endpoint.** It names a transport and a port
+exactly, so a name that was added bare — with no announce URL and therefore
+nothing to probe — becomes probeable on the operator's own say-so. A `TCP:`
+preference names a port without saying whether it speaks HTTP or HTTPS, and
+guessing wrong records a dead endpoint for a live tracker, so those are kept in
+the record and not adopted. Nothing is ever removed on the strength of a record:
+an endpoint we have measured working outranks a list of ports.
+
+34 of the 300 names on the seed list publish one, 28 of them naming a UDP port,
+5 naming only TCP, and one denying outright. Between them the 34 records carry
+exactly three words the spec does not define — `HTTPS:443`, `DENY` and `ALL` —
+and all three are read as the comments they are.
+
+The same rules as everywhere else apply to the lookup. A SERVFAIL or a timeout
+leaves the stored record alone, since a query that could not be answered is not
+an answer of "no record"; NOERROR and NXDOMAIN are authoritative and do clear
+it. Publishing, moving or withdrawing a record is a `bep34_added`,
+`bep34_changed` or `bep34_removed` in the feed. The query rides along with the
+A and AAAA lookups each pass, so it costs one more question per name per hour
+and does not touch the tracker at all.
+
 ### What software is answering
 
 No tracker discloses a version, and BEP 15 has nowhere to put one. But the HTTP
@@ -477,9 +526,10 @@ on `http:2095` and dead on `https:443`, and a list that averaged the two would
 recommend a URL that does not work. `live` asks the same question of the
 endpoint rather than the name, for the same reason.
 
-Parked, disabled and control names never appear. A parked domain resolves
-perfectly and answers nothing, which is exactly what a list built on DNS alone
-cannot see.
+Parked, disabled and control names never appear, nor do hosts that deny
+BitTorrent traffic in DNS. A parked domain resolves perfectly and answers
+nothing, which is exactly what a list built on DNS alone cannot see, and a
+denying host has asked not to be contacted at all.
 
 The query parameters, the first three named as newTrackon names them so a caller
 can swap the host and keep the URL:
@@ -624,6 +674,7 @@ changing anything under `web/src/`.
 cmd/trackerd/          entry point
 internal/store/        SQLite schema, migrations, queries
 internal/resolver/     DNS lookups (codeberg.org/miekg/dns)
+internal/bep34/        BEP 34 tracker preferences published in TXT records
 internal/enrich/       AS/RIR/geo providers: Cymru, RDAP, MaxMind
 internal/prober/       BEP 15 and BEP 48 checks, software fingerprinting
 internal/collector/    scheduler, the pure diff engine, enrichment and probe runners

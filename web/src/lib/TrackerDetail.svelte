@@ -107,6 +107,9 @@
       {#if data.parked}
         <span class="pill parked" title="resolves only to parking addresses">parked</span>
       {/if}
+      {#if data.bep34_denies}
+        <span class="pill denies" title="publishes a BEP 34 record naming no tracker">denies</span>
+      {/if}
     </div>
     <p class="meta">
       source {data.source || 'unknown'}
@@ -134,7 +137,19 @@
         </span>
       {/each}
     </div>
-    {#if endpoints.length === 0}
+    {#if data.bep34 && !data.bep34_denies}
+      <p class="sub">
+        Advertises <code>{data.bep34}</code> in DNS, so the UDP endpoints it names
+        are probed whether or not a list ever mentioned them.
+      </p>
+    {/if}
+    {#if data.bep34_denies}
+      <p class="muted">
+        <code>{data.bep34}</code> — this host publishes a BEP 34 record naming no
+        tracker, which is the operator asking not to be contacted. It is no longer
+        probed. The name and everything measured before stay on record.
+      </p>
+    {:else if endpoints.length === 0}
       <p class="muted">
         No announce endpoint on record, so there is nothing to speak to. This name
         was added bare; re-import the list it came from to pick its endpoints up.

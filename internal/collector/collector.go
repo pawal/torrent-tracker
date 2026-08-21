@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pawal/torrent-tracker/internal/bep34"
 	"github.com/pawal/torrent-tracker/internal/resolver"
 	"github.com/pawal/torrent-tracker/internal/store"
 )
@@ -201,6 +202,9 @@ func (c *Collector) collectOne(ctx context.Context, t store.Tracker,
 	if err := c.markParked(ctx, t, obs, parking); err != nil {
 		return plan, err
 	}
+	if err := c.checkBEP34(ctx, t); err != nil {
+		return plan, err
+	}
 	if plan.Changes() > 0 {
 		c.log().Info("tracker changed", "tracker", t.Name, "status", plan.Status, "changes", plan.Changes())
 	}
@@ -318,6 +322,58 @@ func (c *Collector) markParked(ctx context.Context, t store.Tracker, obs Observa
 		c.log().Info("tracker parked", "tracker", t.Name, "addresses", len(addrs))
 	}
 	return nil
+}
+
+// checkBEP34 records the tracker preferences a name publishes in DNS and adopts
+// the UDP endpoints it advertises. A query that failed leaves the stored record
+// alone, the rule that keeps a broken resolver from erasing history.
+func (c *Collector) checkBEP34(ctx context.Context, t store.Tracker) error {
+	res := c.Resolver.Lookup(ctx, t.Name, resolver.TypeTXT)
+	if !res.Status.Resolved() {
+		return nil
+	}
+	rec := bep34.Parse(res.TXT)
+	changed, err := c.Store.SetBEP34(ctx, t.ID, rec.Raw, rec.Denies(), c.now())
+	if err != nil {
+		return err
+	}
+	if rec.Denies() {
+		if changed {
+			c.log().Info("tracker denies BitTorrent traffic", "tracker", t.Name, "record", rec.Raw)
+			return c.stopProbing(ctx, t)
+		}
+		return nil
+	}
+	if changed {
+		c.log().Info("tracker preferences changed", "tracker", t.Name, "record", rec.Raw)
+	}
+	// A UDP preference names an endpoint outright. A TCP one names a port
+	// without saying whether it speaks HTTP or HTTPS, and guessing wrong would
+	// record a dead endpoint for a live tracker, so those are kept in the
+	// record and not adopted.
+	for _, p := range rec.Prefs {
+		if p.Proto != "udp" {
+			continue
+		}
+		fresh, err := c.Store.AddEndpoint(ctx, t.ID, "udp", p.Port, "/announce", c.now())
+		if err != nil {
+			return err
+		}
+		if fresh {
+			c.log().Info("adopted endpoint advertised in DNS", "tracker", t.Name, "port", p.Port)
+		}
+	}
+	return nil
+}
+
+// stopProbing closes out a tracker we have been told not to contact. The
+// history stays; what ends is the claim to be measuring it now.
+func (c *Collector) stopProbing(ctx context.Context, t store.Tracker) error {
+	if err := c.Store.ClearProbes(ctx, t.ID, c.now()); err != nil {
+		return err
+	}
+	_, _, err := c.Store.SetReach(ctx, t.ID, store.ReachUnknown, "", c.now())
+	return err
 }
 
 // Run collects immediately, then every interval until ctx is cancelled. Each

@@ -284,6 +284,12 @@ export function describe(c) {
       return { sign: '~', cls: 'net', text: `IPv${c.family} ${c.detail}` }
     case 'parked':
       return { sign: '!', cls: 'status', text: c.detail || 'parked' }
+    case 'bep34_added':
+      return { sign: '~', cls: 'net', text: `publishes ${c.detail}` }
+    case 'bep34_removed':
+      return { sign: '~', cls: 'net', text: `withdrew ${c.detail}` }
+    case 'bep34_changed':
+      return { sign: '~', cls: 'net', text: `preferences ${c.detail}` }
     case 'tracker_up':
       return { sign: '↑', cls: 'up', text: `answering again — ${c.detail}` }
     case 'tracker_down':

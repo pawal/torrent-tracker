@@ -580,6 +580,24 @@ type ProbeTarget struct {
 	Rolling []int
 }
 
+// ClearProbes closes every probe interval of a tracker, for when probing stops
+// rather than measures something dead. The history keeps what was measured; the
+// present stops claiming to be.
+func (s *Store) ClearProbes(ctx context.Context, trackerID int64, now time.Time) error {
+	eps, err := s.EndpointsFor(ctx, trackerID)
+	if err != nil {
+		return err
+	}
+	ids := make([]int64, 0, len(eps))
+	for _, e := range eps {
+		ids = append(ids, e.ID)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return s.PutProbes(ctx, ids, nil, now)
+}
+
 // ProbeTargets assembles the work for every enabled tracker with an endpoint.
 // Names added bare have none, so there is nothing to speak to.
 func (s *Store) ProbeTargets(ctx context.Context) ([]ProbeTarget, error) {
@@ -657,7 +675,10 @@ func (s *Store) ProbeTargets(ctx context.Context) ([]ProbeTarget, error) {
 
 	out := make([]ProbeTarget, 0, len(targets))
 	for _, t := range targets {
-		if len(t.Endpoints) > 0 {
+		// A host publishing BEP 34 with no endpoint has said it runs no
+		// tracker. Probing it anyway would be ignoring the one opt-out the
+		// protocol gives an operator.
+		if len(t.Endpoints) > 0 && !t.Tracker.BEP34Denies {
 			out = append(out, t)
 		}
 	}

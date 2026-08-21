@@ -99,6 +99,11 @@
                 {#if t.parked}
                   <span class="pill parked" title="resolves only to parking addresses">parked</span>
                 {/if}
+                {#if t.bep34_denies}
+                  <span class="pill denies" title="publishes a BEP 34 record naming no tracker"
+                    >denies</span
+                  >
+                {/if}
               </td>
               <td class="net-tag">
                 <!-- Keyed on the whole tuple: one AS can appear twice with a

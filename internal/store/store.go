@@ -56,6 +56,12 @@ const (
 	ChangeIPsStable  = "ips_stable"
 	// ChangeParked marks a name as no longer a tracker but a parked domain.
 	ChangeParked = "parked"
+	// ChangeBEP34Added, ChangeBEP34Removed and ChangeBEP34Changed record a name
+	// publishing, withdrawing or moving the tracker preferences it advertises
+	// in DNS.
+	ChangeBEP34Added   = "bep34_added"
+	ChangeBEP34Removed = "bep34_removed"
+	ChangeBEP34Changed = "bep34_changed"
 	// ChangeTrackerUp, ChangeTrackerDown and ChangeTrackerPartial record the
 	// tracker protocol answering or falling silent, which is a different fact
 	// from the name resolving. Only the rollup reaches the feed: a rolling
@@ -82,6 +88,11 @@ type Tracker struct {
 	// LastStatus, which only says whether the name resolves.
 	Reach          Reach      `json:"reach,omitempty"`
 	ReachCheckedAt *time.Time `json:"reach_checked_at,omitempty"`
+	// BEP34 is the tracker preferences record the name publishes, empty when it
+	// publishes none. BEP34Denies marks one naming no endpoint at all: the host
+	// says it runs no trackers.
+	BEP34       string `json:"bep34,omitempty"`
+	BEP34Denies bool   `json:"bep34_denies,omitempty"`
 }
 
 // IPRecord is one contiguous period during which an address was observed.

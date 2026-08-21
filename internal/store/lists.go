@@ -27,8 +27,9 @@ type ListEntry struct {
 }
 
 // ListEndpoints assembles the announce endpoints eligible for a client list,
-// best uptime first. Disabled, control and parked names never appear: a parked
-// domain resolves perfectly and answers nothing.
+// best uptime first. Disabled, control and parked names never appear, nor do
+// hosts that deny BitTorrent traffic in DNS: a parked domain resolves perfectly
+// and answers nothing, and a denying host has asked not to be contacted.
 func (s *Store) ListEndpoints(ctx context.Context, from, until time.Time) ([]ListEntry, error) {
 	win, err := s.AvailabilityOver(ctx, from, until)
 	if err != nil {
@@ -44,7 +45,7 @@ func (s *Store) ListEndpoints(ctx context.Context, from, until time.Time) ([]Lis
 		SELECT t.id, t.name, t.created_at, e.id, e.scheme, e.port, e.path
 		FROM endpoints e
 		JOIN trackers t ON t.id = e.tracker_id
-		WHERE t.enabled = 1 AND t.control = 0 AND t.parked = 0`)
+		WHERE t.enabled = 1 AND t.control = 0 AND t.parked = 0 AND t.bep34_denies = 0`)
 	if err != nil {
 		return nil, fmt.Errorf("read list endpoints: %w", err)
 	}

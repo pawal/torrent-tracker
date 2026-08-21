@@ -160,9 +160,16 @@ func (s *Server) handleTrackers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range views {
-		if a, ok := win.Trackers[views[i].ID]; ok && a.Known() {
-			share := a.Share()
-			views[i].Uptime = &share
+		a, ok := win.Trackers[views[i].ID]
+		if !ok || !a.Known() {
+			continue
+		}
+		share := a.Share()
+		views[i].Uptime = &share
+		if !a.Since.IsZero() {
+			views[i].State = &store.TrackerState{
+				Answering: a.Answering, Since: a.Since, Clipped: a.Clipped,
+			}
 		}
 	}
 	s.writeJSON(w, http.StatusOK, views)

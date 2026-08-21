@@ -242,6 +242,27 @@ scale. The percentage is the share of *measured* time the address answered, so
 an unprobed week neither helps nor hurts it — the same abstention rule the
 rollup uses.
 
+### How long has that been true
+
+The lanes answer it for anyone willing to read a chart, but the first thing
+anyone wants from a list is a sentence, which is what newTrackon's status column
+gives: *working for 3 days*, *down for 6 hours*. The registry listing carries the
+same, as `answering 12d` or `silent 4h` beside the DNS verdict.
+
+It cannot come from the current probe rows, which is the obvious place to look
+and the wrong one. `probes.since` dates one address's verdict, so a name that
+answered on `1.2.3.4` for a week and moved to `1.2.3.5` an hour ago would read
+as answering for an hour when it never stopped. The stretch is a property of the
+name, so it comes out of the same union the uptime does: merge every lane's live
+intervals and take the last one, and a handover between addresses closes up into
+the one stretch it was.
+
+Two things it will not claim. A stretch running back to the edge of the window
+is a lower bound and says so — `30d+`, not `30d` — because the window cannot see
+when it really began. And a name nothing is measuring now has no present state
+at all: when probing stops, the last verdict describes the past, and *answering
+for six hours* would be a claim about six hours nobody watched.
+
 The DNS lane needs no new collection. Every pass already wrote a row to
 `lookups` — status, duration and error, per tracker — and nothing ever read it,
 so a month of resolution history was on disk from the start. Consecutive

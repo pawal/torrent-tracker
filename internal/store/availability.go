@@ -13,6 +13,14 @@ import (
 type Availability struct {
 	Live     time.Duration
 	Measured time.Duration
+	// Since is when the present stretch began: of answering when Answering, of
+	// silence otherwise. Zero when nothing is being measured now, since a state
+	// nobody is watching is not a present state.
+	Since     time.Time
+	Answering bool
+	// Clipped marks a stretch running back to the start of the window, which
+	// began at least that long ago rather than exactly then.
+	Clipped bool
 }
 
 // Share is the fraction of measured time spent answering.
@@ -58,29 +66,59 @@ func (sp *spans) add(iv interval, live bool) {
 	}
 }
 
-func (sp *spans) availability() Availability {
-	return Availability{Live: cover(sp.live), Measured: cover(sp.measured)}
+func (sp *spans) availability(window interval) Availability {
+	live, measured := merge(sp.live), merge(sp.measured)
+	a := Availability{Live: cover(live), Measured: cover(measured)}
+	if len(measured) == 0 {
+		return a
+	}
+	// Nothing has been measured up to the end of the window, so there is no
+	// present state to date: probing stopped, or the addresses went away.
+	if measured[len(measured)-1].end.Before(window.end) {
+		return a
+	}
+	switch {
+	case len(live) > 0 && !live[len(live)-1].end.Before(window.end):
+		a.Answering, a.Since = true, live[len(live)-1].start
+	case len(live) > 0:
+		a.Since = live[len(live)-1].end
+	default:
+		// Measured and never once answering, so silent since the first thing
+		// anyone measured.
+		a.Since = measured[0].start
+	}
+	a.Clipped = !a.Since.After(window.start)
+	return a
 }
 
-// cover is the time a set of intervals spans in total, counting overlap once.
-func cover(ivs []interval) time.Duration {
+// merge sorts intervals and folds the overlapping ones together, so a stretch
+// two addresses covered at once counts as the one stretch it was.
+func merge(ivs []interval) []interval {
 	if len(ivs) == 0 {
-		return 0
+		return nil
 	}
 	sort.Slice(ivs, func(i, j int) bool { return ivs[i].start.Before(ivs[j].start) })
-	var total time.Duration
-	cur := ivs[0]
+	out := []interval{ivs[0]}
 	for _, iv := range ivs[1:] {
-		if iv.start.After(cur.end) {
-			total += cur.end.Sub(cur.start)
-			cur = iv
+		last := &out[len(out)-1]
+		if iv.start.After(last.end) {
+			out = append(out, iv)
 			continue
 		}
-		if iv.end.After(cur.end) {
-			cur.end = iv.end
+		if iv.end.After(last.end) {
+			last.end = iv.end
 		}
 	}
-	return total + cur.end.Sub(cur.start)
+	return out
+}
+
+// cover is the time a set of merged intervals spans in total.
+func cover(merged []interval) time.Duration {
+	var total time.Duration
+	for _, iv := range merged {
+		total += iv.end.Sub(iv.start)
+	}
+	return total
 }
 
 func spansFor(m map[int64]*spans, id int64) *spans {
@@ -158,10 +196,10 @@ func (s *Store) AvailabilityOver(ctx context.Context, from, until time.Time) (Av
 	}
 
 	for id, sp := range trackers {
-		w.Trackers[id] = sp.availability()
+		w.Trackers[id] = sp.availability(window)
 	}
 	for id, sp := range endpoints {
-		w.Endpoints[id] = sp.availability()
+		w.Endpoints[id] = sp.availability(window)
 	}
 	return w, nil
 }

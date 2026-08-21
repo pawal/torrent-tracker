@@ -239,6 +239,19 @@ type TrackerView struct {
 	// Uptime is the share of measured time the tracker answered over the
 	// window, null when nothing was measured.
 	Uptime *float64 `json:"uptime"`
+	// State is how long the present reachability has held, null when nothing is
+	// being measured now.
+	State *TrackerState `json:"state"`
+}
+
+// TrackerState is the phrase a list wants rather than a colour: answering or
+// silent, and since when.
+type TrackerState struct {
+	Answering bool      `json:"answering"`
+	Since     time.Time `json:"since"`
+	// Clipped marks a stretch running back to the edge of the window, so it
+	// began at least that long ago rather than exactly then.
+	Clipped bool `json:"clipped,omitempty"`
 }
 
 // ListTrackerViews returns trackers with their active addresses attached.

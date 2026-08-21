@@ -189,6 +189,21 @@ export function axisTicks(from, now, labels = 6) {
   return ticks
 }
 
+/**
+ * How long a tracker's present state has held: "6h", "3d", or "3d+" when the
+ * stretch runs back to the edge of the window and is therefore a lower bound.
+ */
+export function fmtSince(state, now = Date.now()) {
+  if (!state?.since) return ''
+  const mins = Math.floor((now - new Date(state.since).getTime()) / 60_000)
+  let text
+  if (mins < 1) text = 'just now'
+  else if (mins < 60) text = `${mins}m`
+  else if (mins < 1440) text = `${Math.floor(mins / 60)}h`
+  else text = `${Math.floor(mins / 1440)}d`
+  return state.clipped ? `${text}+` : text
+}
+
 /** A share as a whole-number percentage, or a dash when nothing was measured. */
 export function fmtPercent(share) {
   if (share === null || share === undefined) return '-'

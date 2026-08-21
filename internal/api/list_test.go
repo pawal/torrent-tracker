@@ -346,3 +346,42 @@ func TestTrackersCarryUptime(t *testing.T) {
 		t.Errorf("unprobed uptime = %v, want null", u)
 	}
 }
+
+func TestTrackersCarryTheCurrentState(t *testing.T) {
+	h, st := testServer(t)
+	now := seedLists(t, st)
+	listTracker(t, st, "quiet.example.com", now.Add(-20*day), "udp", 6969, "1.2.3.6")
+
+	var got []store.TrackerView
+	getJSON(t, h, "/api/trackers", &got)
+
+	state := map[string]*store.TrackerState{}
+	for _, v := range got {
+		state[v.Name] = v.State
+	}
+
+	// Answering throughout, so the stretch runs back to the first measurement
+	// rather than to the most recent probe.
+	good := state["good.example.com"]
+	if good == nil || !good.Answering {
+		t.Fatalf("good = %+v, want an answering stretch", good)
+	}
+	if since := now.Sub(good.Since); since < 19*day || since > 21*day {
+		t.Errorf("answering for %v, want about 20 days", since)
+	}
+
+	// Silence is dated from the last answer, five days ago, not from when the
+	// tracker was first probed twenty days ago.
+	flaky := state["flaky.example.com"]
+	if flaky == nil || flaky.Answering {
+		t.Fatalf("flaky = %+v, want a silent stretch", flaky)
+	}
+	if since := now.Sub(flaky.Since); since < 4*day || since > 6*day {
+		t.Errorf("silent for %v, want about 5 days", since)
+	}
+
+	// Nothing has ever been measured, so there is no present state to describe.
+	if s, ok := state["quiet.example.com"]; !ok || s != nil {
+		t.Errorf("unprobed state = %+v, want null", s)
+	}
+}

@@ -1,5 +1,5 @@
 <script>
-  import { getTrackers, fmtTime, describeNetwork, flag, inCountry } from './api.js'
+  import { getTrackers, fmtTime, fmtSince, describeNetwork, flag, inCountry } from './api.js'
 
   // country arrives from the URL, set by clicking a row on the networks page.
   let { country = '' } = $props()
@@ -74,10 +74,12 @@
         <thead>
           <tr>
             <th class="col-name">Tracker</th>
-            <!-- Named for what it is. This column has only ever been the
-                 resolver's verdict, which reads as tracker health if you let
-                 it; whether the tracker answers lives on the detail page. -->
+            <!-- Named for what it is. This column is the resolver's verdict
+                 and nothing else, which reads as tracker health if you let it,
+                 so the column beside it says outright whether the tracker
+                 answers. The per-address detail stays on the detail page. -->
             <th>DNS</th>
+            <th>Answers</th>
             <th>Network</th>
             <th>IPv4</th>
             <th>IPv6</th>
@@ -103,6 +105,21 @@
                   <span class="pill denies" title="publishes a BEP 34 record naming no tracker"
                     >denies</span
                   >
+                {/if}
+              </td>
+              <td>
+                {#if t.state}
+                  <span
+                    class="pill {t.state.answering ? 'live' : 'dead'}"
+                    title="{t.state.answering ? 'answering' : 'silent'} since {fmtTime(
+                      t.state.since,
+                    )}{t.state.clipped ? ', and before the window opened' : ''}"
+                  >
+                    {t.state.answering ? 'answering' : 'silent'}
+                    {fmtSince(t.state)}
+                  </span>
+                {:else}
+                  <span class="muted" title="nothing is being probed now">-</span>
                 {/if}
               </td>
               <td class="net-tag">

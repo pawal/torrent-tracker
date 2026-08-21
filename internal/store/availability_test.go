@@ -24,7 +24,7 @@ func probeRun(t *testing.T, s *Store, endpointID int64, at time.Time, probes ...
 	}
 }
 
-func TestCover(t *testing.T) {
+func TestMergeAndCover(t *testing.T) {
 	h := func(n int) time.Time { return base.Add(time.Duration(n) * time.Hour) }
 	tests := []struct {
 		name string
@@ -44,8 +44,8 @@ func TestCover(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cover(tt.ivs); got != tt.want {
-				t.Errorf("cover() = %v, want %v", got, tt.want)
+			if got := cover(merge(tt.ivs)); got != tt.want {
+				t.Errorf("cover(merge()) = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -228,5 +228,102 @@ func TestAvailabilityOverEmptyWindow(t *testing.T) {
 	}
 	if len(win.Trackers) != 0 {
 		t.Errorf("got %d trackers over an empty window, want 0", len(win.Trackers))
+	}
+}
+
+func TestAvailabilityOverDatesTheCurrentStretch(t *testing.T) {
+	s := testStore(t)
+	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
+	swap, end := base.Add(5*time.Hour), base.Add(10*time.Hour)
+
+	// One address answers for five hours and stops; the other takes over at the
+	// same moment. The tracker never stopped answering, so the stretch runs back
+	// to the first address — which is what the earliest live probe's own Since
+	// would get wrong, reporting five hours instead of ten.
+	probeRun(t, s, endpointID, base,
+		verdict(endpointID, "1.2.3.4", ProbeLive, base, base),
+		verdict(endpointID, "1.2.3.5", ProbeDead, base, base))
+	probeRun(t, s, endpointID, swap,
+		verdict(endpointID, "1.2.3.4", ProbeDead, swap, swap),
+		verdict(endpointID, "1.2.3.5", ProbeLive, swap, swap))
+
+	got, err := s.AvailabilityOver(t.Context(), base.Add(-time.Hour), end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := got.Trackers[trackerID]
+	if !state.Answering {
+		t.Fatal("reads as silent while an address is answering")
+	}
+	if !state.Since.Equal(base) {
+		t.Errorf("answering since %v, want %v", state.Since, base)
+	}
+	if state.Clipped {
+		t.Error("the stretch started inside the window, so it is not a lower bound")
+	}
+}
+
+func TestAvailabilityOverDatesSilence(t *testing.T) {
+	s := testStore(t)
+	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
+	went, end := base.Add(6*time.Hour), base.Add(10*time.Hour)
+
+	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
+	probeRun(t, s, endpointID, went, verdict(endpointID, "1.2.3.4", ProbeDead, went, went))
+
+	got, err := s.AvailabilityOver(t.Context(), base.Add(-time.Hour), end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := got.Trackers[trackerID]
+	// Silence is dated from the last answer, not from the first probe.
+	if state.Answering || !state.Since.Equal(went) {
+		t.Errorf("answering=%v since %v, want silent since %v", state.Answering, state.Since, went)
+	}
+}
+
+func TestAvailabilityOverMarksAStretchOlderThanTheWindow(t *testing.T) {
+	s := testStore(t)
+	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
+	old, end := base.Add(-48*time.Hour), base
+
+	probeRun(t, s, endpointID, old, verdict(endpointID, "1.2.3.4", ProbeLive, old, old))
+
+	got, err := s.AvailabilityOver(t.Context(), base.Add(-24*time.Hour), end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := got.Trackers[trackerID]
+	// It has answered longer than the window can see, so the duration is a
+	// lower bound and has to say so rather than claim exactly 24 hours.
+	if !state.Answering || !state.Clipped {
+		t.Errorf("answering=%v clipped=%v, want an answering stretch marked as clipped",
+			state.Answering, state.Clipped)
+	}
+}
+
+func TestAvailabilityOverHasNoStretchOnceProbingStops(t *testing.T) {
+	s := testStore(t)
+	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
+	stopped, end := base.Add(4*time.Hour), base.Add(10*time.Hour)
+
+	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
+	// The addresses went away, or the host asked not to be probed. Either way
+	// the last verdict describes the past.
+	if err := s.ClearProbes(t.Context(), trackerID, stopped); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.AvailabilityOver(t.Context(), base, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := got.Trackers[trackerID]
+	if state.Measured != 4*time.Hour {
+		t.Errorf("measured = %v, want the 4h that was measured", state.Measured)
+	}
+	// "Answering for six hours" would be a claim about time nobody watched.
+	if !state.Since.IsZero() {
+		t.Errorf("dated a stretch to %v with nothing being measured now", state.Since)
 	}
 }

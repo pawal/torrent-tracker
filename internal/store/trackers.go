@@ -201,6 +201,9 @@ type TrackerView struct {
 	// Rolling lists families tracked by prefix; their IPv4/IPv6 entries are
 	// CIDRs, not addresses.
 	Rolling []int `json:"rolling,omitempty"`
+	// Uptime is the share of measured time the tracker answered over the
+	// window, null when nothing was measured.
+	Uptime *float64 `json:"uptime"`
 }
 
 // ListTrackerViews returns trackers with their active addresses attached.

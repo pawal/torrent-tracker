@@ -35,6 +35,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/changes", s.handleChanges)
 	mux.HandleFunc("GET /api/runs", s.handleRuns)
 	mux.HandleFunc("GET /api/networks", s.handleNetworks)
+	mux.HandleFunc("GET /api/list", s.handleList)
+	mux.HandleFunc("GET /api/list/{filter}", s.handleList)
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -150,6 +152,18 @@ func (s *Server) handleTrackers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.serverError(w, err)
 		return
+	}
+	until := time.Now().UTC()
+	win, err := s.Store.AvailabilityOver(r.Context(), until.AddDate(0, 0, -intParam(r, "days", 30)), until)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	for i := range views {
+		if a, ok := win.Trackers[views[i].ID]; ok && a.Known() {
+			share := a.Share()
+			views[i].Uptime = &share
+		}
 	}
 	s.writeJSON(w, http.StatusOK, views)
 }

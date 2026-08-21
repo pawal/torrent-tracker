@@ -441,6 +441,68 @@ exists, and that difference is worth recording. Import any source directly:
 ./trackerd import --url https://example.com/my-list.txt
 ```
 
+## Lists for clients
+
+Everything above answers questions about trackers. The lists answer the one a
+BitTorrent client asks: which announce URLs are worth using? They are plain
+text, one URL per entry with a blank line after it, so a response pastes
+straight into a client's tracker box.
+
+| Endpoint | Returns |
+| --- | --- |
+| `GET /api/list` | the stable list, the one worth recommending |
+| `GET /api/list/stable` | uptime of 95% or better, tracked for at least 10 days |
+| `GET /api/list/live` | every endpoint answering right now, however new |
+| `GET /api/list/{0-100}` | uptime at or above that percentage |
+| `GET /api/list/udp` | the stable list, UDP only |
+| `GET /api/list/http` | the stable list, HTTP and HTTPS |
+| `GET /api/list/all` | every endpoint on record, dead or alive |
+
+**Uptime is the share of measured time the name answered**, over `?days` (30 by
+default). Not the share of checks: probes are hours apart and irregular, so
+counting them makes two trackers on different schedules incomparable, which is
+the limitation newTrackon's own FAQ concedes about its last-1000-checks figure.
+Unknown verdicts abstain exactly as they do in the rollup, so a week nobody
+could probe neither helps nor hurts.
+
+The lanes of a name are unioned rather than averaged. A client needs one
+(endpoint, address) pair to work, not all of them, so a name with four addresses
+of which one is stale is up, not 75% up. `/api/trackers` carries the same number
+as `uptime`, null when nothing was measured — which is not the same as zero, and
+the reason a name nothing has ever spoken to is never recommended however long
+it has resolved.
+
+Entries are endpoints rather than names, because `tracker.bt4g.com` can be live
+on `http:2095` and dead on `https:443`, and a list that averaged the two would
+recommend a URL that does not work. `live` asks the same question of the
+endpoint rather than the name, for the same reason.
+
+Parked, disabled and control names never appear. A parked domain resolves
+perfectly and answers nothing, which is exactly what a list built on DNS alone
+cannot see.
+
+The query parameters, the first three named as newTrackon names them so a caller
+can swap the host and keep the URL:
+
+| Parameter | Default | Effect |
+| --- | --- | --- |
+| `min_age_days` | 10 on `stable`, else 0 | how long a name must have been tracked |
+| `include_ipv4_only_trackers` | true | off requires an IPv6 address |
+| `include_ipv6_only_trackers` | true | off requires an IPv4 address |
+| `days` | 30 | the window uptime is measured over |
+| `per_as` | unlimited | most trackers to take from any one origin AS |
+
+`per_as` is the one no other list can offer, since no other list knows what
+network its trackers sit on. Announcing to forty names behind one CDN is a
+single failure domain wearing forty hats: `per_as=3` takes the seed list from
+323 endpoints to 216. A tracker whose network is unknown is never dropped,
+nothing having said it adds concentration, and the endpoints of one hostname
+count once.
+
+Nothing is stable until something has been measured, so `stable` and the
+per-scheme lists come back empty on a database `probe` has never run against.
+`all` works from the registry alone.
+
 ## HTTP API
 
 Read-only. Everything that changes the registry lives in the CLI, so the server
@@ -449,10 +511,11 @@ needs no authentication.
 | Endpoint | Returns |
 | --- | --- |
 | `GET /api/stats` | counters and the last run |
-| `GET /api/trackers` | all trackers with their live addresses (`?all=1` includes removed) |
+| `GET /api/trackers` | all trackers with their live addresses and uptime (`?all=1` includes removed, `?days=N` sets the uptime window) |
 | `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info, per-endpoint probe results, and probe and DNS history for the window (`?days=N`, default 30) |
 | `GET /api/changes` | the change feed (`?since=RFC3339&limit=N`) |
 | `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software |
+| `GET /api/list/...` | announce URLs as plain text, see [Lists for clients](#lists-for-clients) |
 | `GET /api/runs` | recent collection runs |
 | `GET /healthz` | liveness |
 

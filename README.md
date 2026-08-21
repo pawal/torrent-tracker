@@ -1,67 +1,60 @@
 # torrent-tracker
 
-Tracks the IP addresses of known BitTorrent trackers over time, and shows what
-changed.
+Tracks the IP addresses of known BitTorrent trackers over time, checks which of
+them still answer, and serves the result as a web UI, a JSON API and announce
+lists a client can paste.
 
-A collector resolves every known tracker hostname on a schedule, stores each
-address as a time interval rather than a snapshot, annotates every address with
-the network it sits in, and appends every change to a feed. A small Svelte UI
-reads that history back. Everything ships as one static Go binary plus a SQLite
-file.
+Per tracker name:
 
-This replaces the original Perl version (kept in `legacy/`), which diffed two
-JSON snapshots and emailed the result.
+- **Addresses** — A and AAAA, stored as intervals so a gap stays visible
+- **Placement** — origin AS, RIR, country and city, per address
+- **Reachability** — BEP 15 and BEP 48 probes, per endpoint and per address
+- **Preferences** — the BEP 34 record the host publishes about itself
+- **Software** — the fingerprint an HTTP tracker leaves in its replies
 
-A public instance runs at <https://tracker.evilbit.de/>.
+Collection runs hourly, probing every six hours, and every change is appended to
+a feed. Everything ships as one static Go binary plus a SQLite file. A public
+instance runs at <https://tracker.evilbit.de/>; the original Perl version is
+kept in `legacy/`.
 
 ## Quick start
 
 ```sh
 make build                      # builds the UI, embeds it, builds ./trackerd
 ./trackerd import --file list.txt
-./trackerd poll                 # one collection pass
+./trackerd poll                 # one collection pass, then probe
 ./trackerd enrich               # look up AS, RIR and location
 ./trackerd serve                # UI + API on :8080, collecting hourly
 ```
 
 `make run` does the last step for you. Open <http://localhost:8080>.
 
-## How the history model works
+## The history model
 
-The obvious approach is to snapshot the addresses on each run and diff
-consecutive snapshots. That produces a lot of noise and no history you can
-query. So instead:
+Addresses are stored as intervals, not snapshots:
 
-- **`ip_records`** holds one row per contiguous period an address was seen
-  (`first_seen`, `last_seen`, `active`). An address that goes away and later
-  comes back gets a *second* row, so the gap stays visible.
-- **`changes`** is an append-only feed of `ip_added` / `ip_removed` /
-  `status_changed` / `tracker_added`. This is what the dashboard renders.
-- **`lookups`** and **`runs`** keep the audit trail, so you can tell a resolver
-  outage apart from trackers that really did disappear.
-
-Two rules keep the history honest:
+- **`ip_records`** — one row per contiguous period an address was seen
+  (`first_seen`, `last_seen`, `active`). An address that goes away and comes
+  back gets a second row, so the gap stays visible.
+- **`changes`** — an append-only feed of `ip_added`, `ip_removed`,
+  `status_changed` and `tracker_added`. This is what the dashboard renders.
+- **`lookups`** and **`runs`** — the audit trail, so a resolver outage can be
+  told apart from trackers that really disappeared.
 
 **A failed query never retires an address.** Results are tracked per address
-family. If the AAAA query SERVFAILs while A succeeds, the stored IPv6 records
-are left alone instead of being recorded as removed. NXDOMAIN and NOERROR *are*
-authoritative, so those do retire addresses. Without this, one flaky moment from
-a resolver would look like every tracker dying at once.
+family: an AAAA SERVFAIL leaves the stored IPv6 records alone. NXDOMAIN and
+NOERROR are authoritative and do retire.
 
-**Addresses must be missing repeatedly before they are retired.**
-`--miss-threshold` (default 2) sets how many consecutive absences it takes. Many
-trackers sit behind rotating or round-robin DNS and return a different subset
-each query, so a threshold above 1 keeps that churn out of the change feed.
+**An address must be missing repeatedly to be retired.** `--miss-threshold`
+(default 2) sets how many consecutive absences it takes, which keeps rotating
+and round-robin DNS out of the feed.
 
-## Rolling addresses and parked names
+## Rolling addresses
 
-Two things generate history that looks like news but is not.
-
-**Hosts that roll their addresses.** A tracker behind a CDN answers with a
-different set of edge addresses every time its TTL expires. Recorded one row at
-a time, `p4p.arenabg.com` alone would write about 70,000 address records and
-140,000 change entries a year, all of them saying the same thing. After three
-changed runs, the family switches to one record per prefix:
+A tracker behind a CDN answers with different edge addresses every TTL, and
+`p4p.arenabg.com` alone would write about 70,000 address records a year that way.
+After `--roll-after` (3) changed runs the family switches to one record per
+prefix:
 
 ```
 p4p.arenabg.com
@@ -69,41 +62,28 @@ p4p.arenabg.com
   IPv6  2600:9000:2094::/48  rolling   ~8 addresses per run
 ```
 
-The prefix comes from enrichment, but not by looking the address up: a rolling
-host answers with addresses nothing has ever seen, so they are never in
-`ip_info` when the pass runs. What is known is the prefix a *sibling* address
-was found in, so an address is matched by containment against the prefixes
-enrichment has already recorded. One enriched address in the /48 is enough to
-place every later one. An address inside no known prefix is left as an address.
+The prefix is not looked up, since a rolling host answers with addresses nothing
+has ever seen. Containment supplies it instead: an address is matched against the
+prefixes enrichment has already recorded for the name's other addresses, so one
+enriched address places every later one in the /48. An address inside no known
+prefix stays an address.
 
-Nothing is reported while the addresses churn inside the prefix; a move to a
-different prefix is a `prefix_added` and a `prefix_removed`. If the addresses
-settle for three runs the family goes back to being tracked address by address.
-`--roll-after=-1` turns the whole thing off and keeps every address.
+Churn inside a prefix is not reported. A move to another prefix is a
+`prefix_added` and a `prefix_removed`. After `--steady-after` (3) settled runs
+the family returns to per-address tracking; `--roll-after=-1` keeps every
+address.
 
-**Those three changed runs need not be consecutive.** Not every CDN reshuffles
-on every query. `p4p.arenabg.com` serves one CloudFront pool for a couple of
-hours, swaps to another, and swaps back — so its changes are never adjacent, and
-a churn count cleared by the first unchanged run went 1, 0, 1, 0 and never
-reached the threshold. Its IPv4 family stayed on per-address tracking for days,
-emitting four `ip_removed` and four `ip_added` entries per swap, while its IPv6
-family churned every single run and rolled immediately. Three names produced 54%
-of all address churn in the feed on that rule.
+The changed runs need not be consecutive, since a CDN that swaps pools every
+few hours never produces adjacent changes. Churn therefore survives an
+unchanged run and clears only once a family has settled.
 
-So churn now survives an unchanged run and clears only once a family has
-actually settled — the same `--steady-after` that un-rolls a rolling family. A
-set that cannot hold still for three runs is churning; one that renumbers once
-and then holds is a host that moved, and still never rolls.
+## Parked names
 
-**Names that are no longer trackers.** Expired tracker domains get bought and
-pointed at a parking host, where they carry on answering and so carry on
-looking healthy. The seed list has carried `0123456789nonexistent.com` since
-2012 as a canary: a name meant never to resolve. It resolves now, and 26 dead
-trackers answer with the same address.
-
-That makes the detector self-maintaining. A control name is one known not to be
-a tracker, so whatever it answers with is a parking address by definition, and
-any name resolving only to those is parked:
+Expired tracker domains get bought and pointed at a parking host, where they
+carry on answering and so carry on looking healthy. The detector is
+self-maintaining: a control name is one known not to be a tracker, so whatever it
+answers with is a parking address by definition, and any name resolving only to
+those is parked.
 
 ```sh
 trackerd control 0123456789nonexistent.com   # mark a canary (the seed one is automatic)
@@ -111,24 +91,22 @@ trackerd parked                              # list what it caught
 trackerd parked --disable                    # remove them, keeping their history
 ```
 
-Control names are resolved on every pass but are not trackers: they stay out of
-the listings, the counts and the change feed. A tracker that answers with a
-parking address *and* an address of its own is left alone, since only names
-that resolve to nothing but parking are parked.
+The seed list has carried `0123456789nonexistent.com` since 2012 as a name meant
+never to resolve. It resolves now, and 26 dead trackers answer with the same
+address.
 
-This catches a parking operator by its addresses rather than by a curated
-blocklist, so it survives the operator renumbering. It only catches operators a
-control name points at, though. Names parked somewhere else need `trackerd rm`,
-or promote one of them to a control name to catch the rest of its cluster.
+Control names are resolved every pass but stay out of the listings, the counts
+and the feed. A name answering with a parking address *and* one of its own is
+left alone.
+
+Catching an operator by its addresses survives renumbering, but only reaches
+operators a control name points at. Names parked elsewhere need `trackerd rm`,
+or promote one of them to a control name to catch its cluster.
 
 ## Does it still answer?
 
-Resolving in DNS and being a tracker are different questions, and the second is
-the one people mean. Dead trackers keep their names for years, so the registry
-is full of hosts that answer every A query and no announce. There is no public
-API that will tell you whether an arbitrary hostname is a live tracker —
-newTrackon and the published lists only cover names someone submitted — so the
-check is the protocol itself:
+Resolving in DNS and being a tracker are different questions, and dead trackers
+keep their names for years. So the check is the protocol itself:
 
 | Transport | Check | Live means |
 | --- | --- | --- |
@@ -140,29 +118,8 @@ trackerd probe                  # one pass over every endpoint
 trackerd reach --state partial  # the interesting ones
 ```
 
-A database from before this existed has no endpoints, and `probe` will say so.
-Backfill them with `--endpoints-only`, which attaches endpoints to names the
-registry already has and nothing else:
-
-```sh
-trackerd import --file list.txt --endpoints-only
-```
-
-Use that rather than a plain import on a curated registry. Importing re-enables
-every name in the list, which is what you want when adding trackers and exactly
-what you do not want here: it would resurrect the names you removed for being
-dead or parked.
-
-**Per address, not per name.** A probe is made for each (endpoint, address)
-pair, the same grain as enrichment. A name with four A records where one is a
-stale host reads as `partial` rather than flapping between live and dead, and
-`AAAA exists but nothing listens on it` becomes visible instead of being hidden
-by happy eyeballs. Probing by name would pick whichever address the resolver
-returned and call the question closed.
-
-**One hostname, several endpoints.** `1337.abcvg.info` serves `:80` and `:443`,
-and they can disagree. The importer now keeps the scheme, port and path it used
-to discard, so endpoints are probed separately and rolled up:
+Probes run per (endpoint, address) pair, the same grain as enrichment, and roll
+up per name:
 
 ```
 tracker.bt4g.com                       partial
@@ -170,45 +127,38 @@ tracker.bt4g.com                       partial
   https:443   live on 2 of 4 addresses
 ```
 
-The same two rules that keep the address history honest apply here:
+That grain makes `AAAA exists but nothing listens on it` visible, and holds a
+name with one stale A record at `partial` instead of flapping.
 
-**A probe that could not be made is not a failed probe.** A name that resolves
-to nothing, or a CDN answering `429`, records `unknown` and keeps whatever the
-last real measurement said. Only measured states reach the feed, so a resolver
-outage cannot read as every tracker dying at once.
+- **A probe that could not be made is not a failed probe.** A name resolving to
+  nothing, or a CDN answering `429`, records `unknown` and keeps the last real
+  measurement.
+- **One silence is not death.** `--probe-miss-threshold` (default 2) failures
+  are needed before an endpoint is called dead.
+- **A silent UDP connect is retransmitted once**, inside the same
+  `--probe-timeout` budget. An answer that merely is not a tracker reply is not
+  retried.
+- **Rolling families are sampled**, `--probe-sample` (default 2) addresses each.
+- **Only the rollup reaches the feed**: `tracker_up`, `tracker_down`,
+  `tracker_partial`. Per-address detail stays on the tracker page.
+- **A verdict that changes is kept.** `probes` holds the open interval per
+  (endpoint, address), and the stretch each new verdict replaces is appended to
+  `probe_history` as a closed interval — the shape `ip_records` uses.
 
-**One silence is not death.** `--probe-miss-threshold` (default 2) sets the
-consecutive failures needed before an endpoint is called dead. Trackers drop
-UDP packets and rate-limit; a single timeout proves nothing.
+A database from before this existed has no endpoints. `--endpoints-only`
+backfills them without re-enabling the names removed for being dead or parked:
 
-UDP gets a second chance sooner than that. A dropped datagram is
-indistinguishable from a dead tracker, so a silent connect request is
-retransmitted once inside the same `--probe-timeout` budget — BEP 15 expects
-clients to retry, and one unlucky packet should not spend one of an endpoint's
-two lives. An answer that merely fails to be a tracker reply is not retried:
-asking twice would not change it.
+```sh
+trackerd import --file list.txt --endpoints-only
+```
 
-Rolling families are the deliberate exception to probing every address. Their
-records hold a prefix, and the addresses inside it are interchangeable and gone
-by the next round, so `--probe-sample` (default 2) addresses are probed per
-family instead of all of them.
+`poll` probes straight after collecting. Under `serve` the two run on separate
+clocks — `--probe-interval`, default 6h, against hourly collection — since
+probing is several requests per tracker rather than one DNS query.
+`--probe=false` skips it.
 
-Only the rollup reaches the change feed — `tracker_up`, `tracker_down` and
-`tracker_partial` — because per-address transitions on a CDN-fronted name would
-flood it. The per-endpoint, per-address detail lives on the tracker page.
-
-**A verdict that changes is kept, not overwritten.** The `probes` table holds
-one row per (endpoint, address) and describes the present, so a tracker that
-went dead last Tuesday would leave no trace of the week it was working. Each
-time a verdict moves, the stretch it replaces is appended to `probe_history` as
-a closed interval — the same shape `ip_records` uses for addresses, and for the
-same reason: a tracker that answers for a month is one row, not one row per
-pass. The open interval stays in `probes`, so the two together cover the axis
-with no seam.
-
-The tracker page draws that as one lane per endpoint and address over a fixed
-7, 30 or 90 day window, with the DNS status of the name on the same axis above
-it:
+The tracker page draws one lane per endpoint and address over a fixed 7, 30 or
+90 day window, with the name's DNS status on the same axis above it:
 
 ```
 resolution
@@ -221,67 +171,45 @@ udp:6969  172.67.136.175                            ▒▒▒▒█████�
           └ 07-22      07-27      08-01      08-06      08-11
 ```
 
-One axis rather than two cards, because the useful question spans both: a name
-that stopped answering *while resolving perfectly* is a dead tracker, and one
-that stopped answering *when its DNS went SERVFAIL* is a broken delegation.
-Reading down a column says which. The address history below runs on the same
-window and the same axis, so the third row of the question — *which* address it
-was answering on — lines up with the other two.
+One axis, because the question spans both: a name that stopped answering while
+resolving perfectly is a dead tracker, one that stopped when its DNS went
+SERVFAIL is a broken delegation. The address history shares the window, so
+*which* address it answered on lines up too.
 
-The window is what makes the address history readable at all. Drawn over the
-span of the data, a rolling name is unusable: `p4p.arenabg.com` has 113 address
-records, so its timeline was 113 one-hour slivers with no scale. On a fixed
-window, records that ended before it opened are simply not drawn, live ones sort
-first and retired ones by how recently they went, and the list caps at the 25
-most recent until asked for in full.
+The fixed window is also what makes a rolling name readable, `p4p.arenabg.com`'s
+113 address records being 113 one-hour slivers otherwise. Records that ended
+before the window opened are not drawn, and the list caps at 25 until asked for
+in full.
 
-Blank is time nobody asked, which is not the same as asking and learning
-nothing: probing starts when a name is added and stops when its address goes
-away, and an `unknown` verdict draws grey rather than joining the red-green
-scale. The percentage is the share of *measured* time the address answered, so
-an unprobed week neither helps nor hurts it — the same abstention rule the
-rollup uses.
+Blank is time nobody asked: `unknown` draws grey rather than joining the
+red-green scale, and the percentage is the share of *measured* time the address
+answered.
 
 ### How long has that been true
 
-The lanes answer it for anyone willing to read a chart, but the first thing
-anyone wants from a list is a sentence, which is what newTrackon's status column
-gives: *working for 3 days*, *down for 6 hours*. The registry listing carries the
-same, as `answering 12d` or `silent 4h` beside the DNS verdict.
+The registry listing carries a sentence beside the DNS verdict: `answering 12d`
+or `silent 4h`. It comes from the union of every lane's live intervals, not from
+`probes.since` — a name that changed address an hour ago never stopped
+answering, and merging the lanes closes the handover into the one stretch it was.
 
-It cannot come from the current probe rows, which is the obvious place to look
-and the wrong one. `probes.since` dates one address's verdict, so a name that
-answered on `1.2.3.4` for a week and moved to `1.2.3.5` an hour ago would read
-as answering for an hour when it never stopped. The stretch is a property of the
-name, so it comes out of the same union the uptime does: merge every lane's live
-intervals and take the last one, and a handover between addresses closes up into
-the one stretch it was.
+Two things it will not claim: a stretch running back to the edge of the window
+says `30d+` rather than `30d`, and a name nothing is measuring now has no present
+state at all.
 
-Two things it will not claim. A stretch running back to the edge of the window
-is a lower bound and says so — `30d+`, not `30d` — because the window cannot see
-when it really began. And a name nothing is measuring now has no present state
-at all: when probing stops, the last verdict describes the past, and *answering
-for six hours* would be a claim about six hours nobody watched.
+The DNS lane needs no new collection: every pass already writes status,
+duration and error per tracker to `lookups`. Consecutive samples of the same
+status coalesce into intervals, so 720 hourly samples become 11 for a name with
+two outages, and the same query reports median and 95th-percentile resolution
+latency.
 
-The DNS lane needs no new collection. Every pass already wrote a row to
-`lookups` — status, duration and error, per tracker — and nothing ever read it,
-so a month of resolution history was on disk from the start. Consecutive
-samples of the same status coalesce into one interval, which is what makes it
-drawable: 720 hourly samples become 11 intervals for a name with two outages.
-Each sample speaks for the time until the next one, which is all a poll can.
-The same query reports median and 95th-percentile resolution latency for the
-window; percentiles rather than a mean, since one resolver timeout would drag
-an average past every real reading.
-
-Both logs are bounded by retention rather than by uptime: `--probe-retention`
-and `--lookup-retention` (both 90 days) sweep at the end of each probing and
-collection pass. `lookups` in particular was growing without bound — one row
-per tracker per pass is about 200k rows a month on a 300-name registry.
+`--probe-retention` and `--lookup-retention` (90 days each) sweep at the end of
+each pass. `lookups` grows by one row per tracker per pass, about 200k rows a
+month on a 300-name registry.
 
 ### When the host says no
 
 BEP 34 lets a tracker's own hostname say where it runs, in a TXT record on the
-name we are already resolving:
+name already being resolved:
 
 ```
 tracker.opentrackr.org.   TXT  "BITTORRENT UDP:1337 TCP:1337"
@@ -289,50 +217,39 @@ tracker.skynetcloud.site. TXT  "BITTORRENT DENY ALL"
 ```
 
 The keyword opens the record and the words after it name the endpoints, most
-preferred first. A record naming none says the host runs no trackers, which is
-the closest thing the protocol has to an opt-out — there is no DENY keyword, so
-`DENY ALL` means what a bare `BITTORRENT` means: those are two unrecognised
-words, and unrecognised words are ignored by design.
+preferred first. A record naming none says the host runs no trackers, the
+protocol's nearest thing to an opt-out. There is no DENY keyword, so `DENY ALL`
+means what a bare `BITTORRENT` means: unrecognised words, ignored by design.
 
-This is worth honouring for its own sake, and it is the one thing a tracker
-operator can do to be left alone by a monitor that never announces. A denying
-host stops being probed, drops off every client list, and has its open probe
-intervals closed rather than left to imply we are still measuring it.
+A denying host stops being probed, drops off every client list, and has its open
+probe intervals closed.
 
-**It flags rather than deletes, which is where this parts company with
-newTrackon**, whose denial removes the tracker outright. The spec's own security
-note is the reason: an ISP can block a tracker by injecting the record. Deleting
-on the strength of one DNS answer would let anyone in the resolution path erase
-history, so the name, its addresses and everything measured before it are kept
+**It flags rather than deletes**, since an ISP can block a tracker by injecting
+the record and one DNS answer should not let anyone in the resolution path
+erase history. The name, its addresses and everything measured before are kept,
 and the reason is shown on its page.
 
-**A UDP preference is adopted as an endpoint.** It names a transport and a port
-exactly, so a name that was added bare — with no announce URL and therefore
-nothing to probe — becomes probeable on the operator's own say-so. A `TCP:`
-preference names a port without saying whether it speaks HTTP or HTTPS, and
-guessing wrong records a dead endpoint for a live tracker, so those are kept in
-the record and not adopted. Nothing is ever removed on the strength of a record:
-an endpoint we have measured working outranks a list of ports.
+**A UDP preference is adopted as an endpoint**, which makes a name added bare
+probeable on the operator's own say-so. `TCP:` names a port without saying
+whether it speaks HTTP or HTTPS, so those are recorded and not adopted. Nothing
+is ever removed on the strength of a record: a measured working endpoint
+outranks a list of ports.
 
-34 of the 300 names on the seed list publish one, 28 of them naming a UDP port,
-5 naming only TCP, and one denying outright. Between them the 34 records carry
-exactly three words the spec does not define — `HTTPS:443`, `DENY` and `ALL` —
-and all three are read as the comments they are.
+A SERVFAIL or timeout leaves the stored record alone; NOERROR and NXDOMAIN clear
+it. Changes are `bep34_added`, `bep34_changed` and `bep34_removed`. The query
+rides along with the A and AAAA lookups — one more question per name per hour,
+and it never touches the tracker.
 
-The same rules as everywhere else apply to the lookup. A SERVFAIL or a timeout
-leaves the stored record alone, since a query that could not be answered is not
-an answer of "no record"; NOERROR and NXDOMAIN are authoritative and do clear
-it. Publishing, moving or withdrawing a record is a `bep34_added`,
-`bep34_changed` or `bep34_removed` in the feed. The query rides along with the
-A and AAAA lookups each pass, so it costs one more question per name per hour
-and does not touch the tracker at all.
+34 of the 300 seed names publish a record: 28 name a UDP port, 5 name only TCP,
+one denies outright. Between them they carry three words the spec does not
+define — `HTTPS:443`, `DENY` and `ALL` — all read as the comments they are.
 
 ### What software is answering
 
-No tracker discloses a version, and BEP 15 has nowhere to put one. But the HTTP
-reply the prober already fetched carries a fingerprint: the failure text an
-implementation chose, or the shape of the dict it returned, are literals in its
-source. Recording them costs no extra request:
+No tracker discloses a version, but the HTTP reply the prober already fetched
+carries a fingerprint: the failure text an implementation chose, or the shape of
+the dict it returned, are literals in its source. Recording them costs no extra
+request:
 
 ```
 26  no info_hash parameter supplied                          (opentracker)
@@ -342,70 +259,46 @@ source. Recording them costs no extra request:
  1  files,flags,flags.min_request_interval
 ```
 
-18 clusters over 60 of 299 trackers on the seed list. The coverage is thin on
-purpose: UDP endpoints disclose nothing, and only live HTTP ones answer at all,
-so this is a sample of one transport rather than a census.
+18 clusters over 60 of 299 trackers on the seed list. Thin on purpose: UDP
+endpoints disclose nothing and only live HTTP ones answer, so this is a sample of
+one transport rather than a census.
 
-The two kinds of evidence are not worth the same, so which one a signature is
-gets recorded alongside it. A **failure text** is a literal lifted from somebody's
-source and points at one implementation. A **reply shape** is only the keys the
-answer happened to carry, and some of those follow the peers a tracker has to
-report rather than the software: `peers6` appears only when there was an IPv6
-peer to list, and one tracker in the live registry answered with `peers6` and no
-`peers` at all. Grouping the two alike split a single implementation across ten
-rows and let a tracker drift between them from one pass to the next.
+**Failure texts and reply shapes are not worth the same**, so which kind a
+signature is gets recorded with it. A failure text is a literal from somebody's
+source; a shape is only the keys the answer happened to carry, some of which
+follow the peers a tracker has to report rather than the software. So shapes
+group with their conditional keys dropped (`peers`, `peers6`, `downloaded`,
+`min interval`, `warning message`, `external ip`, `tracker id`), which folded
+ten rows into one, while failure texts group verbatim. Raw signatures are kept
+as the cluster's variants, so a fold can be inspected.
 
-So shapes are grouped with their conditional keys — `peers`, `peers6`,
-`downloaded`, `min interval`, `warning message`, `external ip`, `tracker id` —
-dropped, which folded those ten rows into one; failure texts are grouped
-verbatim. The raw signatures are kept and listed as the cluster's variants, so a
-fold can be inspected instead of trusted. Rows recorded before the kind was
-tracked have none, and group by their raw signature until the next pass.
+**Names are applied at render time**, since a guess written into history cannot
+be corrected. The signature is stored and the mapping to a name like
+`opentracker` lives in `software` in `web/src/lib/api.js`: extend it there and
+every stored row is reinterpreted. Anything unnamed displays as its signature.
 
-The raw signature is what gets stored. Naming a cluster is a guess, and a guess
-written into history cannot be corrected, so the mapping from signature to a
-name like `opentracker` lives in `software` in `web/src/lib/api.js` and is
-applied at render time — extend it there and every stored row is reinterpreted.
-Anything unnamed displays as its signature, which still groups correctly.
+**A shape-only tracker is asked once more**, for an announce with the
+`info_hash` left out, since implementations write their own words when they
+*refuse* something. Of 30 shape-only names, 17 disclosed a literal. The request
+is skipped for anything already named and cannot change the verdict.
 
-A tracker that can answer the question asked has no reason to say who it is: the
-reply is the same handful of BEP 3 keys whoever wrote it. Implementations write
-their own words when they *refuse* something, so a live tracker that has offered
-nothing but a shape is asked once more for an announce with the `info_hash` left
-out. Of 30 names that were shape-only in the live registry, 17 disclosed a
-literal when asked, 16 endpoints of them sharing one — a cluster that had been
-scattered across several shape rows. The extra request is skipped for anything
-already named, and whatever it draws cannot change the verdict: only the
-fingerprint is taken from it.
+Two edges are handled. Only a prefix of a reply is ever read, so a tracker that
+answers scrape with its whole table — one reply was 53MB — still yields a
+fingerprint from a dictionary cut off mid-way. And every scrape reply opens with
+`files`, so a shape amounting to nothing more asks announce as well.
 
-Two things stop a live HTTP tracker from being identified, and both are handled.
-Some answer scrape with their whole table rather than the `info_hash` asked
-about — one observed reply was 53MB — so only a prefix is ever read and the
-fingerprint has to survive being cut off mid-dictionary; the keys that arrived
-are kept and the rest is discarded. And every scrape reply opens with the same
-`files` key, so a scrape whose shape amounts to nothing more than that is not an
-identification: announce is asked as well, without letting the answer overturn
-the verdict scrape already established.
+The `Server` header is captured alongside but names the front end: nginx and
+Cloudflare overwrite whatever the tracker set.
 
-The `Server` header is captured alongside, but it names the front end rather
-than the tracker: nginx and Cloudflare overwrite whatever the tracker set.
-
-A tracker's software shows once on its page, breaking out per endpoint only
-when they disagree, and aggregates under "By tracker software" on the networks
-page. It is an inference, not a measurement, so it renders in the muted style
-`parked` and `rolling` use rather than joining the status colours.
-
-`poll` probes straight after collecting, so a one-shot run works from the
-addresses it just found. Under `serve` the two run on separate clocks
-(`--probe-interval`, default 6h, against an hourly collection): probing is
-several requests per tracker and far more visible to the operator than a DNS
-query, so it does not belong on the same schedule. `--probe=false` skips it.
+Software shows on a tracker's page, per endpoint only when they disagree, and
+aggregates under "By tracker software" on the networks page. It is an inference,
+so it renders in the muted style `parked` and `rolling` use.
 
 ## Address enrichment
 
 Every observed address is annotated with its origin AS, the RIR that allocated
-the prefix, and its location, so you can see when a new address also means a new
-network. There are three sources, and each can be switched on or off on its own:
+the prefix, and its location, so a new address that is also a new network shows
+as one. Three sources, each switchable on its own:
 
 | Source | Gives | Cost |
 | --- | --- | --- |
@@ -413,23 +306,17 @@ network. There are three sources, and each can be switched on or off on its own:
 | **RDAP** (`--rdap`, default on) | authoritative network name, holder organisation, country | one HTTPS request per address, throttled to `--rdap-interval` (1 s) |
 | **MaxMind** (`--geoip-db PATH`, off) | city and coordinates | local `.mmdb`, needs a free GeoLite2 account |
 
-Cymru alone covers the common case and is fast: 448 addresses in about 34 s.
-RDAP is authoritative but rate-limited, so it is the slow part. Turn it off with
-`--rdap=false` if you only want AS and country.
-
-RDAP finds the right registry from IANA's bootstrap tables
-(`data.iana.org/rdap/`), fetched once and cached, instead of going through a
+Cymru alone covers the common case: 448 addresses in about 34 s. RDAP is
+authoritative but rate-limited, so it is the slow part; `--rdap=false` if AS and
+country are enough. RDAP finds the right registry from IANA's bootstrap tables
+(`data.iana.org/rdap/`), fetched once and cached, rather than through a
 third-party redirector.
 
-Enrichment runs after each collection pass under `serve`, capped at
-`--enrich-batch` addresses (250) per pass, and refreshes anything older than
-`--enrich-max-age` (30 days). Prefixes change hands slowly and the registries
-are rate-limited, so there is nothing to gain from checking more often.
-
-If an address changes origin AS between refreshes, that goes into the change
-feed as `asn_changed` against every tracker pointing at it. A host quietly
-moving from one provider to another is worth knowing about. A lookup that simply
-fails to determine the AS is not treated as a move.
+Under `serve`, enrichment runs after each collection pass, capped at
+`--enrich-batch` (250) addresses, and refreshes anything older than
+`--enrich-max-age` (30 days). An address that changes origin AS is an
+`asn_changed` against every tracker pointing at it; a lookup that simply fails to
+determine the AS is not a move.
 
 `trackerd networks` summarises where the tracked hosts actually live:
 
@@ -442,15 +329,13 @@ AS24940   HETZNER-AS - Hetzner Online GmbH, DE      13        19
 ```
 
 On the networks page each country links through to its trackers. The rollups
-count only the names the registry still lists, so the count and the list agree; a
-tracker served from several countries appears under each.
+count only the names the registry still lists, so the count and the list agree;
+a tracker served from several countries appears under each.
 
 ## Names that are the same host
 
 An address answering for two names is one machine, one operator and one outage,
-however unrelated the names look. The parking detector is a special case of
-exactly that — a parked name is one sharing every address with a control name —
-so the general question is worth asking on its own:
+however unrelated the names look.
 
 ```sh
 trackerd shared                 # addresses more than one tracker answers on
@@ -463,29 +348,24 @@ ADDRESS         NAMES  STILL  NETWORK                 TRACKERS
 188.114.96.1    6      yes    AS13335 MNT-CLOUDFLARE  supertracker.cc.cd, thebox.bz, torrentsmd.com, ...
 ```
 
-**The network is what tells a host from a front end.** Those two rows look
-alike and mean different things: three `dler` names on a HiNet address are one
-server, while six names on a Cloudflare edge are six origins behind an anycast
-address shared with much of the internet. Only the first is one operator. Both
-are one failure domain, which is the useful half of the answer either way, and
-without the AS beside it the listing would assert the stronger claim for both.
+**The network is what tells a host from a front end.** Three `dler` names on a
+HiNet address are one server; six names on a Cloudflare edge are six origins
+behind one anycast address. Only the first is one operator, though both are one
+failure domain.
 
-**A sighting counts for two days rather than for this minute.** A host handing
+**A sighting counts for two days, not for this minute**, because a host handing
 out a rotating subset of its addresses drops one from a name and not from its
-sibling, and they are still the same host — the reason newTrackon keeps 48 hours
-of recent addresses too. An address only some of the names still answer on is
-listed as no longer current rather than dropped.
+sibling. An address only some of the names still answer on is listed as no longer
+current rather than dropped.
 
-Prefix records are left out: a shared /48 is a shared CDN and says nothing about
-a shared host. So are parked names, which share their parking address by
-definition and have their own detector — but a parking operator no control name
-points at still turns up here as the cluster it is, which is how you find the
-name worth promoting to a control.
+Prefix records are left out — a shared /48 is a shared CDN — and so are parked
+names, which share their parking address by definition. A parking operator no
+control name points at still turns up here as the cluster it is, which is how
+to find the name worth promoting.
 
-34 addresses on the seed list are shared, between them covering 67 of the 300
-names. 26 of those names are one parking cluster, 4 of the addresses are
-Cloudflare edges, and 18 of the 34 are plain pairs: one operator, two names, one
-machine.
+34 addresses on the seed list are shared, covering 67 of the 300 names: 26 of
+those names are one parking cluster, 4 of the addresses are Cloudflare edges, and
+18 of the 34 are plain pairs — one operator, two names, one machine.
 
 ## CLI
 
@@ -511,41 +391,40 @@ trackerd [--db PATH] [-v] <command>
 ```
 
 `add` and `import` accept full announce URLs, tracking the hostname and keeping
-the scheme, port and path as an endpoint to probe, so you can paste
-`udp://tracker.example.com:1337/announce` straight in. A bare hostname is
-tracked but cannot be probed, since it says nothing about how to reach the
-tracker. IP literals and `.i2p` / `.onion` / `.ygg` addresses are skipped, since
-they have no DNS history to track.
+the scheme, port and path as an endpoint to probe, so
+`udp://tracker.example.com:1337/announce` pastes straight in. A bare hostname is
+tracked but cannot be probed. IP literals and `.i2p` / `.onion` / `.ygg`
+addresses are skipped, having no DNS history to track.
 
 `rm` disables a tracker but keeps its history, and re-adding the name brings it
-back. `--purge` deletes it and its history outright.
+back; `--purge` deletes it outright. The database path also comes from
+`$TRACKERD_DB`.
 
-The database path also comes from `$TRACKERD_DB`.
+Collection flags (`serve`, `poll`): `--resolver` (comma-separated, defaults to
+`/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`, `--miss-threshold`,
+`--roll-after`, `--steady-after`, `--lookup-retention`. `serve` adds `--addr`,
+`--interval` and `--no-collect`.
 
-Collection flags (`serve` and `poll`): `--resolver` (comma-separated, defaults
-to `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`,
-`--miss-threshold`, `--roll-after`, `--steady-after`, `--lookup-retention`.
-`serve` additionally takes `--addr`, `--interval` and `--no-collect`.
+Probing flags (`probe`, `poll`, `serve`): `--probe-timeout`, `--probe-workers`,
+`--probe-fanout`, `--probe-miss-threshold`, `--probe-sample`,
+`--probe-retention`. `poll` and `serve` add `--probe`; `serve` adds
+`--probe-interval`.
 
-Probing flags (`probe`, `poll` and `serve`): `--probe-timeout`,
-`--probe-workers`, `--probe-fanout`, `--probe-miss-threshold`,
-`--probe-sample`, `--probe-retention`. `poll` and `serve` additionally take
-`--probe`, and `serve` takes `--probe-interval`.
+Enrichment flags (`serve`, `poll`, `enrich`): `--cymru`, `--rdap`, `--geoip-db`,
+`--enrich-max-age`, `--enrich-batch`, `--enrich-workers`, `--rdap-interval`.
 
-`--probe-workers` (default 8) is how many trackers are probed at once;
-`--probe-fanout` (default 4) is how many of one tracker's endpoint-and-address
-pairs are probed at once, so at most 32 probes are ever in flight. Fan-out is
-bounded per tracker on purpose: a CDN-fronted name with a dozen addresses would
-otherwise see the whole set arrive as one burst and throttle us.
+`--probe-workers` (8) is how many trackers are probed at once and
+`--probe-fanout` (4) how many of one tracker's endpoint-and-address pairs, so at
+most 32 probes are in flight and no CDN-fronted name sees its whole address set
+arrive as one burst.
 
 ## Tracker lists
 
 `list.txt` is the seed list: 326 announce URLs covering 300 unique hostnames,
 merged from the original 2012 list plus three maintained public sources. The 64
-names that resolved NXDOMAIN have been dropped, most of them casualties of the
-original 2012 list. Names that merely fail to answer (SERVFAIL, timeout) are
-kept, because a broken delegation is not the same as a name that no longer
-exists, and that difference is worth recording. Import any source directly:
+names that resolved NXDOMAIN have been dropped; names that merely fail to answer
+(SERVFAIL, timeout) are kept, a broken delegation not being the same as a name
+that no longer exists. Import any source directly:
 
 ```sh
 ./trackerd import --url ngosang      # github.com/ngosang/trackerslist
@@ -556,10 +435,9 @@ exists, and that difference is worth recording. Import any source directly:
 
 ## Lists for clients
 
-Everything above answers questions about trackers. The lists answer the one a
-BitTorrent client asks: which announce URLs are worth using? They are plain
-text, one URL per entry with a blank line after it, so a response pastes
-straight into a client's tracker box.
+The lists answer the question a BitTorrent client asks: which announce URLs are
+worth using? Plain text, one URL per entry with a blank line after it, so a
+response pastes straight into a client's tracker box.
 
 | Endpoint | Returns |
 | --- | --- |
@@ -571,33 +449,6 @@ straight into a client's tracker box.
 | `GET /api/list/http` | the stable list, HTTP and HTTPS |
 | `GET /api/list/all` | every endpoint on record, dead or alive |
 
-**Uptime is the share of measured time the name answered**, over `?days` (30 by
-default). Not the share of checks: probes are hours apart and irregular, so
-counting them makes two trackers on different schedules incomparable, which is
-the limitation newTrackon's own FAQ concedes about its last-1000-checks figure.
-Unknown verdicts abstain exactly as they do in the rollup, so a week nobody
-could probe neither helps nor hurts.
-
-The lanes of a name are unioned rather than averaged. A client needs one
-(endpoint, address) pair to work, not all of them, so a name with four addresses
-of which one is stale is up, not 75% up. `/api/trackers` carries the same number
-as `uptime`, null when nothing was measured — which is not the same as zero, and
-the reason a name nothing has ever spoken to is never recommended however long
-it has resolved.
-
-Entries are endpoints rather than names, because `tracker.bt4g.com` can be live
-on `http:2095` and dead on `https:443`, and a list that averaged the two would
-recommend a URL that does not work. `live` asks the same question of the
-endpoint rather than the name, for the same reason.
-
-Parked, disabled and control names never appear, nor do hosts that deny
-BitTorrent traffic in DNS. A parked domain resolves perfectly and answers
-nothing, which is exactly what a list built on DNS alone cannot see, and a
-denying host has asked not to be contacted at all.
-
-The query parameters, the first three named as newTrackon names them so a caller
-can swap the host and keep the URL:
-
 | Parameter | Default | Effect |
 | --- | --- | --- |
 | `min_age_days` | 10 on `stable`, else 0 | how long a name must have been tracked |
@@ -606,16 +457,29 @@ can swap the host and keep the URL:
 | `days` | 30 | the window uptime is measured over |
 | `per_as` | unlimited | most trackers to take from any one origin AS |
 
-`per_as` is the one no other list can offer, since no other list knows what
-network its trackers sit on. Announcing to forty names behind one CDN is a
-single failure domain wearing forty hats: `per_as=3` takes the seed list from
-323 endpoints to 216. A tracker whose network is unknown is never dropped,
-nothing having said it adds concentration, and the endpoints of one hostname
-count once.
+**Uptime is the share of measured time the name answered**, over `?days`, not the
+share of checks: probes are hours apart and irregular, so counting them makes two
+trackers on different schedules incomparable. Unknown verdicts abstain as they do
+in the rollup.
 
-Nothing is stable until something has been measured, so `stable` and the
-per-scheme lists come back empty on a database `probe` has never run against.
-`all` works from the registry alone.
+**Lanes are unioned rather than averaged.** A client needs one (endpoint,
+address) pair to work, so a name with four addresses of which one is stale is
+up, not 75% up. `/api/trackers` carries the same number as `uptime`, null when
+nothing was measured — which is not zero, and why a name nothing has ever
+spoken to is never recommended however long it has resolved.
+
+**Entries are endpoints rather than names**, because `tracker.bt4g.com` can be
+live on `http:2095` and dead on `https:443`.
+
+**`per_as` spends the placement data.** Announcing to forty names behind one CDN
+is a single failure domain wearing forty hats; `per_as=3` takes the seed list
+from 323 endpoints to 216. A tracker whose network is unknown is never dropped,
+and the endpoints of one hostname count once.
+
+Parked, disabled and control names never appear, nor do hosts that deny
+BitTorrent traffic in DNS. Nothing is stable until something has been measured,
+so `stable` and the per-scheme lists come back empty on a database `probe` has
+never run against; `all` works from the registry alone.
 
 ## HTTP API
 
@@ -631,21 +495,19 @@ needs no authentication.
 | `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software, shared addresses |
 | `GET /api/list/...` | announce URLs as plain text, see [Lists for clients](#lists-for-clients) |
 | `GET /api/runs` | recent collection runs |
+| `GET /api/version` | the build's version and the DNS library behind it |
 | `GET /healthz` | liveness |
 
-`limit` has a default per endpoint and is capped at 1000. Anything unparseable
-or non-positive falls back to the default.
-
-Every `/api/` response carries `Access-Control-Allow-Origin: *`, so any site can
-read the data straight from the browser. None of it is private and the endpoints
-are GET-only, so there is nothing here for another site to abuse.
+`limit` has a default per endpoint and is capped at 1000; anything unparseable or
+non-positive falls back to the default. Every `/api/` response carries
+`Access-Control-Allow-Origin: *`, so any site can read the data from the browser.
 
 ## Running as a service
 
 `deploy/trackerd.service` is a systemd unit for Debian 13. It runs the daemon as
 an unprivileged `tracker` user with its database in `/var/lib/trackerd`, which
-systemd creates on first start. The UI is embedded in the binary, so a
-deployment is one file plus the unit, with nothing else to copy.
+systemd creates on first start. The UI is embedded in the binary, so a deployment
+is one file plus the unit.
 
 ```sh
 make build
@@ -670,8 +532,8 @@ sudo -u tracker trackerd --db /var/lib/trackerd/trackers.db import --url ngosang
 
 `TRACKERD_DB` is set in the unit but not in your shell, so ad-hoc commands need
 `--db`, or `sudo -u tracker env TRACKERD_DB=/var/lib/trackerd/trackers.db
-trackerd ...`. Leave it out and they will quietly create a second database in
-the current directory.
+trackerd ...`. Leave it out and they will quietly create a second database in the
+current directory.
 
 The unit listens on `127.0.0.1:8080` and expects a reverse proxy in front:
 
@@ -682,9 +544,8 @@ location / {
 }
 ```
 
-To change the port or listen on every interface, override `ExecStart` in a
-drop-in with `sudo systemctl edit trackerd` rather than editing the installed
-unit:
+To change the port, override `ExecStart` in a drop-in with `sudo systemctl edit
+trackerd` rather than editing the installed unit:
 
 ```ini
 [Service]
@@ -693,18 +554,15 @@ ExecStart=/usr/local/bin/trackerd serve --addr :9090
 ```
 
 The empty `ExecStart=` is required: a drop-in appends to list settings, and two
-`ExecStart` lines are an error for anything but `Type=oneshot`. Restart the
-service afterwards and check the result with `systemctl cat trackerd`.
+`ExecStart` lines are an error for anything but `Type=oneshot`. Restart and check
+the result with `systemctl cat trackerd`.
 
 The unit runs with `ProtectSystem=strict`, an empty capability set and a
 `@system-service` syscall filter; the daemon only needs outbound DNS and HTTPS
-(for RDAP) plus its own state directory. A port below 1024 therefore needs
+plus its own state directory. A port below 1024 therefore needs
 `CAP_NET_BIND_SERVICE` in both `CapabilityBoundingSet=` and
-`AmbientCapabilities=`, which is a good reason to leave the daemon on a high
-port and let the proxy own 80 and 443.
-
-Nothing served over HTTP changes state. The API is read-only and the write paths
-live in the CLI, so a public deployment needs no authentication.
+`AmbientCapabilities=`, which is reason enough to leave the proxy owning 80 and
+443.
 
 ## Development
 
@@ -719,14 +577,10 @@ Run `make run` in one shell and `make dev` in another for frontend work.
 
 GitHub Actions runs the same checks on every push and pull request
 (`.github/workflows/ci.yml`): gofmt, `go vet`, `go test -race`, a static build,
-and a frontend build that fails if `web/dist` is out of date with `web/src`.
-
-It also runs `govulncheck`, weekly as well as on every push, since an advisory
-published tomorrow will not wait for the next commit. That is a reachability
-check, not a dependency-graph scan: it reports only advisories the code can
-actually reach. Graph scanners will flag rather more, including modules that
-are pruned before they ever reach the binary — `go version -m ./trackerd` lists
-what is genuinely linked.
+and a frontend build that fails if `web/dist` is out of date with `web/src`. It
+also runs `govulncheck` weekly, since an advisory published tomorrow will not
+wait for the next commit — a reachability check rather than a dependency-graph
+scan, so it reports only what the code can reach.
 
 The frontend build output in `web/dist/` is committed so `go build` and
 `go install` work without Node installed. Rebuild it with `make ui` after

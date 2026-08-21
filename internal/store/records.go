@@ -496,3 +496,102 @@ func (s *Store) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 	}
 	return runs, rows.Err()
 }
+
+// SharedAddress is one address more than one tracker name resolves to. Two
+// names on one host are one operator and one failure domain, however different
+// the names look — but behind a CDN they are one front end and nothing more,
+// which is why the network comes with it.
+type SharedAddress struct {
+	IP       string     `json:"ip"`
+	Family   int        `json:"family"`
+	Trackers []string   `json:"trackers"`
+	LastSeen time.Time  `json:"last_seen"`
+	Network  NetworkRef `json:"network"`
+	// Active is whether at least two of the names still resolve to it, as
+	// opposed to having passed through it inside the window.
+	Active bool `json:"active"`
+}
+
+// SharedAddresses returns the addresses shared by more than one enabled
+// tracker, most shared first. Records that ended inside the window count, so a
+// host handing out a rotating subset of its addresses still matches; prefix
+// records do not, since a shared /48 is a shared CDN and not a shared host.
+//
+// Parked names are left out. They all share their parking address by
+// definition and the control-name detector already has them; a parking operator
+// no control name points at still shows up here as the cluster it is.
+func (s *Store) SharedAddresses(ctx context.Context, since time.Time, limit int) ([]SharedAddress, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT r.ip, r.family, t.name, MAX(r.last_seen), MAX(r.active),
+		       COALESCE(i.asn, 0),
+		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), i.network_name, ''),
+		       COALESCE(i.rir, ''), COALESCE(i.country, '')
+		FROM ip_records r
+		JOIN trackers t ON t.id = r.tracker_id
+		LEFT JOIN ip_info i ON i.ip = r.ip
+		WHERE r.is_prefix = 0 AND t.enabled = 1 AND t.control = 0 AND t.parked = 0
+		  AND (r.active = 1 OR r.last_seen >= ?)
+		GROUP BY r.ip, t.id
+		ORDER BY r.ip, t.name`, fmtTime(since))
+	if err != nil {
+		return nil, fmt.Errorf("read shared addresses: %w", err)
+	}
+	defer rows.Close()
+
+	index := map[string]int{}
+	active := map[string]int{}
+	out := []SharedAddress{}
+	for rows.Next() {
+		var (
+			a          SharedAddress
+			name, last string
+			live       int
+		)
+		if err := rows.Scan(&a.IP, &a.Family, &name, &last, &live,
+			&a.Network.ASN, &a.Network.Holder, &a.Network.RIR, &a.Network.Country); err != nil {
+			return nil, err
+		}
+		seen, err := parseTime(last)
+		if err != nil {
+			return nil, err
+		}
+		i, ok := index[a.IP]
+		if !ok {
+			i = len(out)
+			index[a.IP] = i
+			out = append(out, a)
+		}
+		out[i].Trackers = append(out[i].Trackers, name)
+		if seen.After(out[i].LastSeen) {
+			out[i].LastSeen = seen
+		}
+		if live == 1 {
+			active[a.IP]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	shared := make([]SharedAddress, 0, len(out))
+	for _, a := range out {
+		if len(a.Trackers) < 2 {
+			continue
+		}
+		a.Active = active[a.IP] > 1
+		shared = append(shared, a)
+	}
+	sort.Slice(shared, func(i, j int) bool {
+		if len(shared[i].Trackers) != len(shared[j].Trackers) {
+			return len(shared[i].Trackers) > len(shared[j].Trackers)
+		}
+		return shared[i].IP < shared[j].IP
+	})
+	if len(shared) > limit {
+		shared = shared[:limit]
+	}
+	return shared, nil
+}

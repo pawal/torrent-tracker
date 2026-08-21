@@ -445,6 +445,48 @@ On the networks page each country links through to its trackers. The rollups
 count only the names the registry still lists, so the count and the list agree; a
 tracker served from several countries appears under each.
 
+## Names that are the same host
+
+An address answering for two names is one machine, one operator and one outage,
+however unrelated the names look. The parking detector is a special case of
+exactly that — a parked name is one sharing every address with a control name —
+so the general question is worth asking on its own:
+
+```sh
+trackerd shared                 # addresses more than one tracker answers on
+trackerd shared --since 168h    # a week, rather than the default two days
+```
+
+```
+ADDRESS         NAMES  STILL  NETWORK                 TRACKERS
+211.75.205.187  3      yes    AS3462 HINET Network-A  tracker.dler.com, tracker.dler.org, tracker2.dler.org
+188.114.96.1    6      yes    AS13335 MNT-CLOUDFLARE  supertracker.cc.cd, thebox.bz, torrentsmd.com, ...
+```
+
+**The network is what tells a host from a front end.** Those two rows look
+alike and mean different things: three `dler` names on a HiNet address are one
+server, while six names on a Cloudflare edge are six origins behind an anycast
+address shared with much of the internet. Only the first is one operator. Both
+are one failure domain, which is the useful half of the answer either way, and
+without the AS beside it the listing would assert the stronger claim for both.
+
+**A sighting counts for two days rather than for this minute.** A host handing
+out a rotating subset of its addresses drops one from a name and not from its
+sibling, and they are still the same host — the reason newTrackon keeps 48 hours
+of recent addresses too. An address only some of the names still answer on is
+listed as no longer current rather than dropped.
+
+Prefix records are left out: a shared /48 is a shared CDN and says nothing about
+a shared host. So are parked names, which share their parking address by
+definition and have their own detector — but a parking operator no control name
+points at still turns up here as the cluster it is, which is how you find the
+name worth promoting to a control.
+
+34 addresses on the seed list are shared, between them covering 67 of the 300
+names. 26 of those names are one parking cluster, 4 of the addresses are
+Cloudflare edges, and 18 of the 34 are plain pairs: one operator, two names, one
+machine.
+
 ## CLI
 
 ```
@@ -463,6 +505,7 @@ trackerd [--db PATH] [-v] <command>
   changes    print the recent change feed    [-n N --since 24h --json]
   networks   summarise networks, RIRs and countries [-n N --json]
   parked     list names that resolve only to parking [--disable --json]
+  shared     list addresses several trackers answer on [-n N --since D --json]
   control    list or set the control names          [--unset]
   sources    list the built-in public tracker lists
 ```
@@ -585,7 +628,7 @@ needs no authentication.
 | `GET /api/trackers` | all trackers with their live addresses and uptime (`?all=1` includes removed, `?days=N` sets the uptime window) |
 | `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info, per-endpoint probe results, and probe and DNS history for the window (`?days=N`, default 30) |
 | `GET /api/changes` | the change feed (`?since=RFC3339&limit=N`) |
-| `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software |
+| `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software, shared addresses |
 | `GET /api/list/...` | announce URLs as plain text, see [Lists for clients](#lists-for-clients) |
 | `GET /api/runs` | recent collection runs |
 | `GET /healthz` | liveness |

@@ -261,7 +261,13 @@ type networksResponse struct {
 	RIRs      []store.NetworkStat      `json:"rirs"`
 	Countries []store.NetworkStat      `json:"countries"`
 	Software  []store.SoftwareStat     `json:"software"`
+	Shared    []store.SharedAddress    `json:"shared"`
 }
+
+// sharedWindow is how recently a name must have been on an address to count as
+// sharing it. Two days of hourly passes still catch a host that hands out a
+// rotating subset of its addresses.
+const sharedWindow = 48 * time.Hour
 
 func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
 	limit := intParam(r, "limit", 20)
@@ -301,9 +307,15 @@ func (s *Server) handleNetworks(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
+	shared, err := s.Store.SharedAddresses(r.Context(), time.Now().UTC().Add(-sharedWindow), limit)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
 	s.writeJSON(w, http.StatusOK, networksResponse{
 		Coverage: cov, Probes: probeCov, Reach: reach,
 		Networks: networks, RIRs: rirs, Countries: countries, Software: software,
+		Shared: shared,
 	})
 }
 

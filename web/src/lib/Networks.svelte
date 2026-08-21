@@ -1,5 +1,12 @@
 <script>
-  import { getNetworks, describeSoftware, describeEvidence, softwareTitle, flag } from './api.js'
+  import {
+    getNetworks,
+    describeSoftware,
+    describeEvidence,
+    softwareTitle,
+    describeNetwork,
+    flag,
+  } from './api.js'
 
   let data = $state(null)
   let error = $state(null)
@@ -77,6 +84,59 @@
                 </td>
                 <td class="mono">{s.trackers}</td>
                 <td class="mono">{s.endpoints}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {/if}
+
+  {#if data.shared?.length}
+    <div class="card">
+      <h2>Shared addresses</h2>
+      <p class="sub">
+        Names answering on one address. One host means one operator and one
+        outage however different the names look; a CDN edge means only one front
+        end, which is what the network beside it tells you. Counted over the last
+        two days, so a host handing out a rotating subset still matches. Parked
+        names are left out: they share their parking address by definition.
+      </p>
+      <div class="scroll">
+        <table class="tight">
+          <thead>
+            <tr>
+              <th>Address</th>
+              <th>Names</th>
+              <th>Network</th>
+              <th>Trackers</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each data.shared as a (a.ip)}
+              <tr>
+                <td class="mono nowrap">
+                  {a.ip}
+                  {#if !a.active}
+                    <span class="pill parked" title="seen inside the window, not resolving there now"
+                      >was</span
+                    >
+                  {/if}
+                </td>
+                <td>{a.trackers.length}</td>
+                <td class="net-tag">
+                  {#if a.network.asn}
+                    <span class="block" title={describeNetwork(a.network)}>
+                      {flag(a.network.country)}
+                      <span class="asn">{describeNetwork(a.network)}</span>
+                    </span>
+                  {:else}-{/if}
+                </td>
+                <td class="mono">
+                  {#each a.trackers as name (name)}
+                    <a class="block" href="#/t/{encodeURIComponent(name)}">{name}</a>
+                  {/each}
+                </td>
               </tr>
             {/each}
           </tbody>

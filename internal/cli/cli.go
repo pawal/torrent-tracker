@@ -43,6 +43,7 @@ commands:
   changes    print the recent change feed
   networks   summarise the networks the trackers live in
   parked     list names that now resolve only to parking addresses
+  shared     list addresses more than one tracker name resolves to
   control    list or set the control names parking is judged against
   sources    list the built-in public tracker lists
 
@@ -128,6 +129,7 @@ func init() {
 		"networks": cmdNetworks,
 		"sources":  cmdSources,
 		"parked":   cmdParked,
+		"shared":   cmdShared,
 		"control":  cmdControl,
 	}
 }
@@ -686,6 +688,59 @@ func cmdParked(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 	}
 	fmt.Printf("\n%d removed, history kept\n", len(parked))
 	return nil
+}
+
+func cmdShared(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {
+	fs := flag.NewFlagSet("shared", flag.ContinueOnError)
+	limit := fs.Int("n", 50, "how many addresses to show")
+	window := fs.Duration("since", 48*time.Hour, "how recently a name must have been on the address")
+	asJSON := fs.Bool("json", false, "output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	shared, err := st.SharedAddresses(ctx, time.Now().UTC().Add(-*window), *limit)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return writeJSON(os.Stdout, shared)
+	}
+	if len(shared) == 0 {
+		fmt.Println("no address is shared by more than one tracker")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ADDRESS\tNAMES\tSTILL\tNETWORK\tTRACKERS")
+	for _, a := range shared {
+		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", a.IP, len(a.Trackers),
+			yesNo(a.Active), orDash(network(a.Network)), strings.Join(a.Trackers, ", "))
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	fmt.Printf("\n%d shared addresses. One host is one operator and one outage; "+
+		"one CDN edge is only one front end.\n", len(shared))
+	return nil
+}
+
+// network renders an origin AS the way the listings do.
+func network(n store.NetworkRef) string {
+	if n.ASN == 0 {
+		return ""
+	}
+	if n.Holder == "" {
+		return fmt.Sprintf("AS%d", n.ASN)
+	}
+	return fmt.Sprintf("AS%d %s", n.ASN, n.Holder)
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 func cmdControl(ctx context.Context, st *store.Store, _ *slog.Logger, args []string) error {

@@ -105,51 +105,42 @@ func (s *Store) RecordsFor(ctx context.Context, trackerID int64) ([]IPRecord, er
 
 // FamilyStates returns the churn bookkeeping for a tracker, keyed by family.
 func (s *Store) FamilyStates(ctx context.Context, trackerID int64) (map[int]FamilyState, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	out := map[int]FamilyState{}
+	err := s.eachRow(ctx, `
 		SELECT family, fingerprint, churn, steady, rolling
-		FROM family_state WHERE tracker_id = ?`, trackerID)
+		FROM family_state WHERE tracker_id = ?`, []any{trackerID}, func(sc scanner) error {
+		var st FamilyState
+		if err := sc.Scan(&st.Family, &st.Fingerprint, &st.Churn, &st.Steady, &st.Rolling); err != nil {
+			return err
+		}
+		out[st.Family] = st
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	return out, nil
+}
 
-	out := map[int]FamilyState{}
-	for rows.Next() {
-		var st FamilyState
-		if err := rows.Scan(&st.Family, &st.Fingerprint, &st.Churn, &st.Steady, &st.Rolling); err != nil {
-			return nil, err
-		}
-		out[st.Family] = st
+func scanRecord(sc scanner) (IPRecord, error) {
+	var (
+		r           IPRecord
+		first, last string
+	)
+	if err := sc.Scan(&r.ID, &r.TrackerID, &r.IP, &r.Family, &first, &last,
+		&r.Active, &r.MissCount, &r.IsPrefix); err != nil {
+		return r, err
 	}
-	return out, rows.Err()
+	var err error
+	if r.FirstSeen, err = parseTime(first); err != nil {
+		return r, err
+	}
+	r.LastSeen, err = parseTime(last)
+	return r, err
 }
 
 func (s *Store) queryRecords(ctx context.Context, q string, args ...any) ([]IPRecord, error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	records := []IPRecord{}
-	for rows.Next() {
-		var (
-			r           IPRecord
-			first, last string
-		)
-		if err := rows.Scan(&r.ID, &r.TrackerID, &r.IP, &r.Family, &first, &last,
-			&r.Active, &r.MissCount, &r.IsPrefix); err != nil {
-			return nil, err
-		}
-		if r.FirstSeen, err = parseTime(first); err != nil {
-			return nil, err
-		}
-		if r.LastSeen, err = parseTime(last); err != nil {
-			return nil, err
-		}
-		records = append(records, r)
-	}
-	return records, rows.Err()
+	return queryAll(ctx, s, scanRecord, q, args...)
 }
 
 // ApplyPlan persists one tracker's collection result atomically: address
@@ -187,20 +178,18 @@ func (s *Store) ApplyPlan(ctx context.Context, trackerID int64, plan Plan, now t
 				WHERE tracker_id = ? AND ip = ? AND active = 1`, trackerID, a.IP); err != nil {
 				return fmt.Errorf("miss %s: %w", a.IP, err)
 			}
-		case ActionRemove:
+		case ActionRemove, ActionSupersede:
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE ip_records SET active = 0 WHERE tracker_id = ? AND ip = ? AND active = 1`,
 				trackerID, a.IP); err != nil {
-				return fmt.Errorf("remove %s: %w", a.IP, err)
+				return fmt.Errorf("%s %s: %w", a.Kind, a.IP, err)
 			}
-			if err := insertChange(ctx, tx, trackerID, ts, removedType(a), a.IP, a.Family, ""); err != nil {
-				return err
-			}
-		case ActionSupersede:
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE ip_records SET active = 0 WHERE tracker_id = ? AND ip = ? AND active = 1`,
-				trackerID, a.IP); err != nil {
-				return fmt.Errorf("supersede %s: %w", a.IP, err)
+			// Superseding swaps how a family is recorded rather than losing an
+			// address, so only a removal reaches the feed.
+			if a.Kind == ActionRemove {
+				if err := insertChange(ctx, tx, trackerID, ts, removedType(a), a.IP, a.Family, ""); err != nil {
+					return err
+				}
 			}
 		default:
 			return fmt.Errorf("unknown action kind %q", a.Kind)
@@ -276,32 +265,26 @@ type ResolutionStats struct {
 func (s *Store) ResolutionHistoryFor(ctx context.Context, trackerID int64, since time.Time) (
 	[]StatusInterval, ResolutionStats, error,
 ) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT ts, status, duration_ms, error FROM lookups
-		WHERE tracker_id = ? AND ts >= ?
-		ORDER BY ts`, trackerID, fmtTime(since))
-	if err != nil {
-		return nil, ResolutionStats{}, err
-	}
-	defer rows.Close()
-
 	var (
 		out       = []StatusInterval{}
 		durations []int
 	)
-	for rows.Next() {
+	err := s.eachRow(ctx, `
+		SELECT ts, status, duration_ms, error FROM lookups
+		WHERE tracker_id = ? AND ts >= ?
+		ORDER BY ts`, []any{trackerID, fmtTime(since)}, func(sc scanner) error {
 		var (
 			ts       string
 			status   Status
 			duration int
 			lookErr  string
 		)
-		if err := rows.Scan(&ts, &status, &duration, &lookErr); err != nil {
-			return nil, ResolutionStats{}, err
+		if err := sc.Scan(&ts, &status, &duration, &lookErr); err != nil {
+			return err
 		}
 		at, err := parseTime(ts)
 		if err != nil {
-			return nil, ResolutionStats{}, err
+			return err
 		}
 		durations = append(durations, duration)
 
@@ -309,7 +292,7 @@ func (s *Store) ResolutionHistoryFor(ctx context.Context, trackerID int64, since
 		if n := len(out); n > 0 && out[n-1].Status == status {
 			out[n-1].Until = at
 			out[n-1].Lookups++
-			continue
+			return nil
 		}
 		if n := len(out); n > 0 {
 			out[n-1].Until = at
@@ -317,8 +300,9 @@ func (s *Store) ResolutionHistoryFor(ctx context.Context, trackerID int64, since
 		out = append(out, StatusInterval{
 			Status: status, Error: lookErr, Since: at, Until: at, Lookups: 1,
 		})
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, ResolutionStats{}, err
 	}
 	return out, resolutionStats(durations), nil
@@ -390,32 +374,27 @@ func insertChangeNullIP(ctx context.Context, tx *sql.Tx, trackerID int64, ts, ki
 
 const changeColumns = `c.id, c.tracker_id, t.name, c.observed_at, c.change_type, c.ip, c.family, c.detail`
 
-func (s *Store) queryChanges(ctx context.Context, q string, args ...any) ([]Change, error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
+func scanChange(sc scanner) (Change, error) {
+	var (
+		c        Change
+		observed string
+		ip       sql.NullString
+		family   sql.NullInt64
+	)
+	if err := sc.Scan(&c.ID, &c.TrackerID, &c.Tracker, &observed, &c.Type, &ip, &family, &c.Detail); err != nil {
+		return c, err
 	}
-	defer rows.Close()
+	var err error
+	if c.ObservedAt, err = parseTime(observed); err != nil {
+		return c, err
+	}
+	c.IP = ip.String
+	c.Family = int(family.Int64)
+	return c, nil
+}
 
-	changes := []Change{}
-	for rows.Next() {
-		var (
-			c        Change
-			observed string
-			ip       sql.NullString
-			family   sql.NullInt64
-		)
-		if err := rows.Scan(&c.ID, &c.TrackerID, &c.Tracker, &observed, &c.Type, &ip, &family, &c.Detail); err != nil {
-			return nil, err
-		}
-		if c.ObservedAt, err = parseTime(observed); err != nil {
-			return nil, err
-		}
-		c.IP = ip.String
-		c.Family = int(family.Int64)
-		changes = append(changes, c)
-	}
-	return changes, rows.Err()
+func (s *Store) queryChanges(ctx context.Context, q string, args ...any) ([]Change, error) {
+	return queryAll(ctx, s, scanChange, q, args...)
 }
 
 // RecentChanges returns the newest changes, optionally limited to those at or
@@ -468,33 +447,26 @@ func (s *Store) RecentRuns(ctx context.Context, limit int) ([]Run, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	return queryAll(ctx, s, scanRun, `
 		SELECT id, started_at, finished_at, tracker_count, ok_count, error_count, change_count
 		FROM runs ORDER BY started_at DESC, id DESC LIMIT ?`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+}
 
-	runs := []Run{}
-	for rows.Next() {
-		var (
-			r        Run
-			started  string
-			finished sql.NullString
-		)
-		if err := rows.Scan(&r.ID, &started, &finished, &r.TrackerCount, &r.OKCount, &r.ErrorCount, &r.ChangeCount); err != nil {
-			return nil, err
-		}
-		if r.StartedAt, err = parseTime(started); err != nil {
-			return nil, err
-		}
-		if r.FinishedAt, err = parseNullTime(finished); err != nil {
-			return nil, err
-		}
-		runs = append(runs, r)
+func scanRun(sc scanner) (Run, error) {
+	var (
+		r        Run
+		started  string
+		finished sql.NullString
+	)
+	if err := sc.Scan(&r.ID, &started, &finished, &r.TrackerCount, &r.OKCount, &r.ErrorCount, &r.ChangeCount); err != nil {
+		return r, err
 	}
-	return runs, rows.Err()
+	var err error
+	if r.StartedAt, err = parseTime(started); err != nil {
+		return r, err
+	}
+	r.FinishedAt, err = parseNullTime(finished)
+	return r, err
 }
 
 // SharedAddress is one address more than one tracker name resolves to. Two
@@ -524,7 +496,10 @@ func (s *Store) SharedAddresses(ctx context.Context, since time.Time, limit int)
 	if limit <= 0 || limit > 500 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	index := map[string]int{}
+	active := map[string]int{}
+	out := []SharedAddress{}
+	err := s.eachRow(ctx, `
 		SELECT r.ip, r.family, t.name, MAX(r.last_seen), MAX(r.active),
 		       COALESCE(i.asn, 0),
 		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), i.network_name, ''),
@@ -535,28 +510,19 @@ func (s *Store) SharedAddresses(ctx context.Context, since time.Time, limit int)
 		WHERE r.is_prefix = 0 AND t.enabled = 1 AND t.control = 0 AND t.parked = 0
 		  AND (r.active = 1 OR r.last_seen >= ?)
 		GROUP BY r.ip, t.id
-		ORDER BY r.ip, t.name`, fmtTime(since))
-	if err != nil {
-		return nil, fmt.Errorf("read shared addresses: %w", err)
-	}
-	defer rows.Close()
-
-	index := map[string]int{}
-	active := map[string]int{}
-	out := []SharedAddress{}
-	for rows.Next() {
+		ORDER BY r.ip, t.name`, []any{fmtTime(since)}, func(sc scanner) error {
 		var (
 			a          SharedAddress
 			name, last string
 			live       int
 		)
-		if err := rows.Scan(&a.IP, &a.Family, &name, &last, &live,
+		if err := sc.Scan(&a.IP, &a.Family, &name, &last, &live,
 			&a.Network.ASN, &a.Network.Holder, &a.Network.RIR, &a.Network.Country); err != nil {
-			return nil, err
+			return err
 		}
 		seen, err := parseTime(last)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		i, ok := index[a.IP]
 		if !ok {
@@ -571,9 +537,10 @@ func (s *Store) SharedAddresses(ctx context.Context, since time.Time, limit int)
 		if live == 1 {
 			active[a.IP]++
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read shared addresses: %w", err)
 	}
 
 	shared := make([]SharedAddress, 0, len(out))

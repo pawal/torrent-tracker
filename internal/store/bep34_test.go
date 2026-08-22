@@ -1,22 +1,10 @@
 package store
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
-
-func kinds(t *testing.T, s *Store, trackerID int64) []string {
-	t.Helper()
-	changes, err := s.ChangesFor(t.Context(), trackerID, 50)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := make([]string, 0, len(changes))
-	for _, c := range changes {
-		out = append(out, c.Type)
-	}
-	return out
-}
 
 func TestSetBEP34RecordsEveryTransition(t *testing.T) {
 	s := testStore(t)
@@ -47,16 +35,9 @@ func TestSetBEP34RecordsEveryTransition(t *testing.T) {
 		}
 	}
 
-	got := kinds(t, s, tr.ID)
 	want := []string{ChangeBEP34Removed, ChangeBEP34Changed, ChangeBEP34Added, ChangeTrackerAdded}
-	if len(got) != len(want) {
-		t.Fatalf("feed = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("feed = %v, want %v", got, want)
-			break
-		}
+	if got := changeKinds(t, s, tr.ID); !slices.Equal(got, want) {
+		t.Errorf("feed = %v, want %v", got, want)
 	}
 }
 
@@ -83,12 +64,7 @@ func TestProbeTargetsSkipsDenyingHosts(t *testing.T) {
 	willing, _ := newTrackerWithEndpoint(t, s, "willing.example.com")
 	denying, _ := newTrackerWithEndpoint(t, s, "denying.example.com")
 	for _, id := range []int64{willing, denying} {
-		if err := s.ApplyPlan(ctx, id, Plan{
-			Status: StatusOK, StatusChanged: true,
-			Actions: []Action{{IP: "1.2.3.4", Family: 4, Kind: ActionAdd}},
-		}, base); err != nil {
-			t.Fatal(err)
-		}
+		apply(t, s, id, base, adds("1.2.3.4")...)
 	}
 	if _, err := s.SetBEP34(ctx, denying, "BITTORRENT", true, base); err != nil {
 		t.Fatal(err)
@@ -113,7 +89,7 @@ func TestClearProbesClosesTheIntervals(t *testing.T) {
 	s := testStore(t)
 	ctx := t.Context()
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
-	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeLive, base))
 
 	if err := s.ClearProbes(ctx, trackerID, base.Add(time.Hour)); err != nil {
 		t.Fatal(err)

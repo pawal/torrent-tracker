@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"text/tabwriter"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/collector"
@@ -106,7 +105,7 @@ func cmdEnrich(ctx context.Context, st *store.Store, log *slog.Logger, args []st
 		ef.maxAge = 0
 	}
 
-	res, err := resolver.New(splitList(rf.servers), rf.timeout, rf.retries)
+	res, err := rf.resolver()
 	if err != nil {
 		return err
 	}
@@ -162,12 +161,11 @@ func cmdNetworks(ctx context.Context, st *store.Store, _ *slog.Logger, args []st
 
 	section := func(title, keyHeader string, rows []store.NetworkStat, withLabel bool) {
 		fmt.Printf("\n%s\n", title)
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		header := []string{keyHeader, "TRACKERS", "ADDRESSES"}
 		if withLabel {
-			fmt.Fprintf(tw, "%s\tHOLDER\tTRACKERS\tADDRESSES\n", keyHeader)
-		} else {
-			fmt.Fprintf(tw, "%s\tTRACKERS\tADDRESSES\n", keyHeader)
+			header = []string{keyHeader, "HOLDER", "TRACKERS", "ADDRESSES"}
 		}
+		tw := table(header...)
 		for _, r := range rows {
 			if withLabel {
 				fmt.Fprintf(tw, "%s\t%s\t%d\t%d\n", r.Key, truncate(r.Label, 44), r.Trackers, r.IPs)

@@ -1,20 +1,13 @@
 package store
 
 import (
-	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/prober"
 )
-
-func probeAt(endpointID int64, ip string, result ProbeResult, now time.Time) Probe {
-	return Probe{
-		EndpointID: endpointID, IP: ip, Family: Family(ip),
-		Result: result, Since: now, CheckedAt: now,
-	}
-}
 
 func TestRollUp(t *testing.T) {
 	now := time.Now().UTC()
@@ -24,28 +17,28 @@ func TestRollUp(t *testing.T) {
 		want   Reach
 	}{
 		{"nothing probed", nil, ReachUnknown},
-		{"single answer", []Probe{probeAt(1, "1.2.3.4", ProbeLive, now)}, ReachLive},
+		{"single answer", []Probe{verdict("1.2.3.4", ProbeLive, now)}, ReachLive},
 		{"every address answers", []Probe{
-			probeAt(1, "1.2.3.4", ProbeLive, now),
-			probeAt(1, "1.2.3.5", ProbeLive, now),
+			verdict("1.2.3.4", ProbeLive, now),
+			verdict("1.2.3.5", ProbeLive, now),
 		}, ReachLive},
 		{"nothing answers", []Probe{
-			probeAt(1, "1.2.3.4", ProbeDead, now),
-			probeAt(2, "1.2.3.4", ProbeDead, now),
+			verdict("1.2.3.4", ProbeDead, now),
+			verdict("1.2.3.5", ProbeDead, now),
 		}, ReachDead},
 		// The case a per-hostname probe cannot see: one stale address left in
 		// DNS while the rest of the name serves fine.
 		{"one address of several is broken", []Probe{
-			probeAt(1, "1.2.3.4", ProbeLive, now),
-			probeAt(1, "1.2.3.5", ProbeDead, now),
+			verdict("1.2.3.4", ProbeLive, now),
+			verdict("1.2.3.5", ProbeDead, now),
 		}, ReachPartial},
 		// An unknown neither proves life nor death, so it must not drag a
 		// working tracker down to partial.
 		{"unknown abstains", []Probe{
-			probeAt(1, "1.2.3.4", ProbeLive, now),
-			probeAt(1, "1.2.3.5", ProbeUnknown, now),
+			verdict("1.2.3.4", ProbeLive, now),
+			verdict("1.2.3.5", ProbeUnknown, now),
 		}, ReachLive},
-		{"only unknowns", []Probe{probeAt(1, "1.2.3.4", ProbeUnknown, now)}, ReachUnknown},
+		{"only unknowns", []Probe{verdict("1.2.3.4", ProbeUnknown, now)}, ReachUnknown},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -87,33 +80,9 @@ func TestReachChange(t *testing.T) {
 	}
 }
 
-// newTrackerWithEndpoint sets up the minimum a probe pass needs: a tracker
-// with one announce endpoint.
-func newTrackerWithEndpoint(t *testing.T, s *Store, name string) (int64, int64) {
-	t.Helper()
-	ctx := context.Background()
-	now := time.Now().UTC()
-
-	tr, _, err := s.AddTracker(ctx, name, "test", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.AddEndpoint(ctx, tr.ID, "udp", 6969, "/announce", now); err != nil {
-		t.Fatal(err)
-	}
-	eps, err := s.EndpointsFor(ctx, tr.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(eps) != 1 {
-		t.Fatalf("got %d endpoints, want 1", len(eps))
-	}
-	return tr.ID, eps[0].ID
-}
-
 func TestAddEndpointIsIdempotent(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	trackerID, _ := newTrackerWithEndpoint(t, s, "tracker.example.com")
@@ -147,19 +116,14 @@ func TestAddEndpointIsIdempotent(t *testing.T) {
 
 func TestPutProbesRoundTrip(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 
-	want := []Probe{
-		probeAt(endpointID, "1.2.3.4", ProbeLive, now),
-		probeAt(endpointID, "1.2.3.5", ProbeDead, now),
-	}
-	want[1].Reason = "timed out"
-	if err := s.PutProbes(ctx, []int64{endpointID}, want, now); err != nil {
-		t.Fatal(err)
-	}
+	dead := verdict("1.2.3.5", ProbeDead, now)
+	dead.Reason = "timed out"
+	probeRun(t, s, endpointID, now, verdict("1.2.3.4", ProbeLive, now), dead)
 
 	got, err := s.ProbesFor(ctx, trackerID)
 	if err != nil {
@@ -180,24 +144,17 @@ func TestPutProbesRoundTrip(t *testing.T) {
 // row goes away rather than lingering as a stale verdict.
 func TestPutProbesPrunesAddressesNoLongerProbed(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 
-	first := []Probe{
-		probeAt(endpointID, "1.2.3.4", ProbeLive, now),
-		probeAt(endpointID, "1.2.3.5", ProbeLive, now),
-	}
-	if err := s.PutProbes(ctx, []int64{endpointID}, first, now); err != nil {
-		t.Fatal(err)
-	}
+	probeRun(t, s, endpointID, now,
+		verdict("1.2.3.4", ProbeLive, now),
+		verdict("1.2.3.5", ProbeLive, now))
 
 	// The second address is gone from DNS, so this round only probes the first.
-	second := []Probe{probeAt(endpointID, "1.2.3.4", ProbeLive, now.Add(time.Hour))}
-	if err := s.PutProbes(ctx, []int64{endpointID}, second, now); err != nil {
-		t.Fatal(err)
-	}
+	probeRun(t, s, endpointID, now, verdict("1.2.3.4", ProbeLive, now.Add(time.Hour)))
 
 	got, err := s.ProbesFor(ctx, trackerID)
 	if err != nil {
@@ -213,7 +170,7 @@ func TestPutProbesPrunesAddressesNoLongerProbed(t *testing.T) {
 
 func TestSetReachAppendsChanges(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	trackerID, _ := newTrackerWithEndpoint(t, s, "tracker.example.com")
@@ -239,34 +196,32 @@ func TestSetReachAppendsChanges(t *testing.T) {
 		t.Error("live to dead did not report a change")
 	}
 
-	changes, err := s.ChangesFor(ctx, trackerID, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var kinds []string
-	for _, c := range changes {
-		if c.Type == ChangeTrackerUp || c.Type == ChangeTrackerDown || c.Type == ChangeTrackerPartial {
-			kinds = append(kinds, c.Type)
-		}
-	}
 	// Newest first: down, then the original up. The repeat in between wrote
 	// nothing.
-	want := []string{ChangeTrackerDown, ChangeTrackerUp}
-	if len(kinds) != len(want) {
-		t.Fatalf("reachability changes = %v, want %v", kinds, want)
+	if got := reachKinds(t, s, trackerID); !slices.Equal(got, []string{ChangeTrackerDown, ChangeTrackerUp}) {
+		t.Errorf("reachability changes = %v, want down then up", got)
 	}
-	for i := range want {
-		if kinds[i] != want[i] {
-			t.Errorf("change[%d] = %q, want %q", i, kinds[i], want[i])
+}
+
+// reachKinds keeps only the reachability entries of a tracker's feed, newest
+// first, which is what a probing test is ever asserting on.
+func reachKinds(t *testing.T, s *Store, trackerID int64) []string {
+	t.Helper()
+	var out []string
+	for _, kind := range changeKinds(t, s, trackerID) {
+		switch kind {
+		case ChangeTrackerUp, ChangeTrackerDown, ChangeTrackerPartial:
+			out = append(out, kind)
 		}
 	}
+	return out
 }
 
 // Going unknown is not a change worth recording: it means the probe could not
 // be made, which says nothing about the tracker.
 func TestSetReachIgnoresUnknown(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	trackerID, _ := newTrackerWithEndpoint(t, s, "tracker.example.com")
@@ -290,7 +245,7 @@ func TestSetReachIgnoresUnknown(t *testing.T) {
 
 func TestReachSummaryCountsNeverProbedAsUnknown(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	live, _ := newTrackerWithEndpoint(t, s, "live.example.com")
@@ -313,7 +268,7 @@ func TestReachSummaryCountsNeverProbedAsUnknown(t *testing.T) {
 
 func TestSoftwareStats(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	const opentracker = "no info_hash parameter supplied"
@@ -327,11 +282,9 @@ func TestSoftwareStats(t *testing.T) {
 		{"udponly.example.com", ""}, // UDP discloses nothing
 	} {
 		_, endpointID := newTrackerWithEndpoint(t, s, tc.name)
-		p := probeAt(endpointID, "1.2.3.4", ProbeLive, now)
+		p := verdict("1.2.3.4", ProbeLive, now)
 		p.Signature = tc.sig
-		if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{p}, now); err != nil {
-			t.Fatal(err)
-		}
+		probeRun(t, s, endpointID, now, p)
 	}
 
 	got, err := s.SoftwareStats(ctx, 10)
@@ -367,17 +320,15 @@ func TestSoftwareStats(t *testing.T) {
 // one pass to the next without anything having changed.
 func TestSoftwareStatsGroupsShapesPastConditionalKeys(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	put := func(name, sig string, kind prober.Kind) {
 		t.Helper()
 		_, endpointID := newTrackerWithEndpoint(t, s, name)
-		p := probeAt(endpointID, "1.2.3.4", ProbeLive, now)
+		p := verdict("1.2.3.4", ProbeLive, now)
 		p.Signature, p.Kind = sig, kind
-		if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{p}, now); err != nil {
-			t.Fatal(err)
-		}
+		probeRun(t, s, endpointID, now, p)
 	}
 
 	// Verbatim from tracker.evilbit.de, where each of these was its own row.
@@ -430,16 +381,14 @@ func TestSoftwareStatsGroupsShapesPastConditionalKeys(t *testing.T) {
 // signature, exactly as they did before, until the next pass rewrites them.
 func TestSoftwareStatsLeavesUnclassifiedRowsAlone(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	const sig = "complete,downloaded,incomplete,interval,min interval,peers"
 	_, endpointID := newTrackerWithEndpoint(t, s, "legacy.example.com")
-	p := probeAt(endpointID, "1.2.3.4", ProbeLive, now)
+	p := verdict("1.2.3.4", ProbeLive, now)
 	p.Signature = sig
-	if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{p}, now); err != nil {
-		t.Fatal(err)
-	}
+	probeRun(t, s, endpointID, now, p)
 
 	got, err := s.SoftwareStats(ctx, 25)
 	if err != nil {
@@ -457,7 +406,7 @@ func TestSoftwareStatsLeavesUnclassifiedRowsAlone(t *testing.T) {
 // mistaken for silent ones.
 func TestProbeTargetsSkipsTrackersWithoutEndpoints(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	newTrackerWithEndpoint(t, s, "withendpoint.example.com")
@@ -491,21 +440,16 @@ func TestProbeTargetsSkipsTrackersWithoutEndpoints(t *testing.T) {
 // past is gone. Since moving is the signal, exactly as merge produces it.
 func TestPutProbesArchivesReplacedVerdicts(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	t0 := time.Now().UTC().Add(-4 * time.Hour)
 	t1 := t0.Add(2 * time.Hour)
 
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 
-	if err := s.PutProbes(ctx, []int64{endpointID},
-		[]Probe{probeAt(endpointID, "1.2.3.4", ProbeLive, t0)}, t0); err != nil {
-		t.Fatal(err)
-	}
-	dead := probeAt(endpointID, "1.2.3.4", ProbeDead, t1)
+	probeRun(t, s, endpointID, t0, verdict("1.2.3.4", ProbeLive, t0))
+	dead := verdict("1.2.3.4", ProbeDead, t1)
 	dead.Reason = "connection refused"
-	if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{dead}, t1); err != nil {
-		t.Fatal(err)
-	}
+	probeRun(t, s, endpointID, t1, dead)
 
 	got, err := s.ProbeHistoryFor(ctx, trackerID, t0.Add(-time.Hour))
 	if err != nil {
@@ -536,17 +480,15 @@ func TestPutProbesArchivesReplacedVerdicts(t *testing.T) {
 // merge holds Since still while the verdict stands, so nothing is archived.
 func TestPutProbesArchivesNothingWhileVerdictStands(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	start := time.Now().UTC().Add(-6 * time.Hour)
 
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 
 	for i := range 4 {
-		p := probeAt(endpointID, "1.2.3.4", ProbeLive, start)
+		p := verdict("1.2.3.4", ProbeLive, start)
 		p.CheckedAt = start.Add(time.Duration(i) * time.Hour)
-		if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{p}, p.CheckedAt); err != nil {
-			t.Fatal(err)
-		}
+		probeRun(t, s, endpointID, p.CheckedAt, p)
 	}
 
 	got, err := s.ProbeHistoryFor(ctx, trackerID, start.Add(-time.Hour))
@@ -562,24 +504,18 @@ func TestPutProbesArchivesNothingWhileVerdictStands(t *testing.T) {
 // closed at the pass that dropped it rather than left dangling.
 func TestPutProbesClosesHistoryForDroppedAddress(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	t0 := time.Now().UTC().Add(-3 * time.Hour)
 	t1 := t0.Add(time.Hour)
 
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 
-	first := []Probe{
-		probeAt(endpointID, "1.2.3.4", ProbeLive, t0),
-		probeAt(endpointID, "1.2.3.5", ProbeLive, t0),
-	}
-	if err := s.PutProbes(ctx, []int64{endpointID}, first, t0); err != nil {
-		t.Fatal(err)
-	}
-	survivor := probeAt(endpointID, "1.2.3.4", ProbeLive, t0)
+	probeRun(t, s, endpointID, t0,
+		verdict("1.2.3.4", ProbeLive, t0),
+		verdict("1.2.3.5", ProbeLive, t0))
+	survivor := verdict("1.2.3.4", ProbeLive, t0)
 	survivor.CheckedAt = t1
-	if err := s.PutProbes(ctx, []int64{endpointID}, []Probe{survivor}, t1); err != nil {
-		t.Fatal(err)
-	}
+	probeRun(t, s, endpointID, t1, survivor)
 
 	got, err := s.ProbeHistoryFor(ctx, trackerID, t0.Add(-time.Hour))
 	if err != nil {
@@ -597,7 +533,7 @@ func TestPutProbesClosesHistoryForDroppedAddress(t *testing.T) {
 // not be shipped, and retention must be able to delete it outright.
 func TestProbeHistoryWindowAndPruning(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	now := time.Now().UTC()
 
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
@@ -614,10 +550,7 @@ func TestProbeHistoryWindowAndPruning(t *testing.T) {
 		{ProbeDead, now},
 	}
 	for _, st := range steps {
-		if err := s.PutProbes(ctx, []int64{endpointID},
-			[]Probe{probeAt(endpointID, "1.2.3.4", st.result, st.at)}, st.at); err != nil {
-			t.Fatal(err)
-		}
+		probeRun(t, s, endpointID, st.at, verdict("1.2.3.4", st.result, st.at))
 	}
 
 	month, err := s.ProbeHistoryFor(ctx, trackerID, now.AddDate(0, 0, -30))

@@ -1,24 +1,15 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 )
 
-func seedAddr(t *testing.T, s *Store, tr Tracker, ip string, family int, at time.Time) {
-	t.Helper()
-	must(t, s.ApplyPlan(context.Background(), tr.ID, Plan{
-		Status:  StatusOK,
-		Actions: []Action{{IP: ip, Family: family, Kind: ActionAdd}},
-	}, at))
-}
-
 func TestPutAndGetIPInfo(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	in := IPInfo{
 		IP: "1.2.3.4", Family: 4, ASN: 13335, ASName: "CLOUDFLARENET",
@@ -49,7 +40,7 @@ func TestPutAndGetIPInfo(t *testing.T) {
 
 func TestPutIPInfoUpserts(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 1, Country: "US"}, base))
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 1, Country: "NL"}, base.Add(time.Hour)))
@@ -84,9 +75,9 @@ func TestIPInfoHolder(t *testing.T) {
 // An address changing origin AS is a real event and belongs in the feed.
 func TestPutIPInfoRecordsASNChange(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
-	seedAddr(t, s, tr, "1.2.3.4", 4, base)
+	apply(t, s, tr.ID, base, adds("1.2.3.4")...)
 
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 24940, ASName: "HETZNER-AS"}, base))
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 13335, ASName: "CLOUDFLARENET"}, base.Add(time.Hour)))
@@ -117,31 +108,31 @@ func TestPutIPInfoRecordsASNChange(t *testing.T) {
 // The first observation is not a change, and neither is a failed re-lookup.
 func TestPutIPInfoASNChangeEdgeCases(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
-	seedAddr(t, s, tr, "1.2.3.4", 4, base)
+	apply(t, s, tr.ID, base, adds("1.2.3.4")...)
 
 	// First write: no event.
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 100}, base))
-	if n := countASNChanges(t, s, tr.ID); n != 0 {
+	if n := countKind(t, s, tr.ID, ChangeASNChanged); n != 0 {
 		t.Errorf("first write produced %d events, want 0", n)
 	}
 
 	// Same AS again: no event.
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 100}, base.Add(time.Hour)))
-	if n := countASNChanges(t, s, tr.ID); n != 0 {
+	if n := countKind(t, s, tr.ID, ChangeASNChanged); n != 0 {
 		t.Errorf("unchanged AS produced %d events, want 0", n)
 	}
 
 	// Lookup failed and reported no AS: not a move, so no event.
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 0, Error: "servfail"}, base.Add(2*time.Hour)))
-	if n := countASNChanges(t, s, tr.ID); n != 0 {
+	if n := countKind(t, s, tr.ID, ChangeASNChanged); n != 0 {
 		t.Errorf("a failed lookup produced %d events, want 0", n)
 	}
 
 	// Recovering from unknown to a real AS is also not a move.
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 100}, base.Add(3*time.Hour)))
-	if n := countASNChanges(t, s, tr.ID); n != 0 {
+	if n := countKind(t, s, tr.ID, ChangeASNChanged); n != 0 {
 		t.Errorf("recovery produced %d events, want 0", n)
 	}
 }
@@ -149,31 +140,31 @@ func TestPutIPInfoASNChangeEdgeCases(t *testing.T) {
 // An address shared by several trackers should notify all of them.
 func TestPutIPInfoASNChangeFansOut(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	a := mustAdd(t, s, "a.example.com")
 	b := mustAdd(t, s, "b.example.com")
-	seedAddr(t, s, a, "1.2.3.4", 4, base)
-	seedAddr(t, s, b, "1.2.3.4", 4, base)
+	apply(t, s, a.ID, base, adds("1.2.3.4")...)
+	apply(t, s, b.ID, base, adds("1.2.3.4")...)
 
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 1}, base))
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.2.3.4", Family: 4, ASN: 2}, base.Add(time.Hour)))
 
-	if n := countASNChanges(t, s, a.ID); n != 1 {
+	if n := countKind(t, s, a.ID, ChangeASNChanged); n != 1 {
 		t.Errorf("tracker a got %d events, want 1", n)
 	}
-	if n := countASNChanges(t, s, b.ID); n != 1 {
+	if n := countKind(t, s, b.ID, ChangeASNChanged); n != 1 {
 		t.Errorf("tracker b got %d events, want 1", n)
 	}
 }
 
 func TestIPsNeedingEnrichment(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
-	seedAddr(t, s, tr, "1.1.1.1", 4, base)
-	seedAddr(t, s, tr, "2.2.2.2", 4, base)
-	seedAddr(t, s, tr, "3.3.3.3", 4, base)
+	apply(t, s, tr.ID, base, adds("1.1.1.1")...)
+	apply(t, s, tr.ID, base, adds("2.2.2.2")...)
+	apply(t, s, tr.ID, base, adds("3.3.3.3")...)
 
 	now := base.Add(48 * time.Hour)
 
@@ -225,13 +216,13 @@ func TestIPsNeedingEnrichment(t *testing.T) {
 
 func TestNetworkSummaries(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	a := mustAdd(t, s, "a.example.com")
 	b := mustAdd(t, s, "b.example.com")
 
-	seedAddr(t, s, a, "1.1.1.1", 4, base)
-	seedAddr(t, s, a, "1.1.1.2", 4, base)
-	seedAddr(t, s, b, "2.2.2.2", 4, base)
+	apply(t, s, a.ID, base, adds("1.1.1.1")...)
+	apply(t, s, a.ID, base, adds("1.1.1.2")...)
+	apply(t, s, b.ID, base, adds("2.2.2.2")...)
 
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.1", Family: 4, ASN: 13335, Org: "Cloudflare", RIR: "arin", Country: "US"}, base))
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.2", Family: 4, ASN: 13335, Org: "Cloudflare", RIR: "arin", Country: "US"}, base))
@@ -282,12 +273,12 @@ func TestNetworkSummaries(t *testing.T) {
 // trackers made the gap visible, since the count and the list have to agree.
 func TestNetworkSummariesCountOnlyListedTrackers(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	live := mustAdd(t, s, "live.example.com")
 	gone := mustAdd(t, s, "gone.example.com")
 
-	seedAddr(t, s, live, "1.1.1.1", 4, base)
-	seedAddr(t, s, gone, "1.1.1.2", 4, base)
+	apply(t, s, live.ID, base, adds("1.1.1.1")...)
+	apply(t, s, gone.ID, base, adds("1.1.1.2")...)
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.1", Family: 4, ASN: 13335, Org: "Cloudflare", RIR: "arin", Country: "US"}, base))
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.2", Family: 4, ASN: 13335, Org: "Cloudflare", RIR: "arin", Country: "US"}, base))
 
@@ -337,10 +328,10 @@ func TestNetworkSummariesCountOnlyListedTrackers(t *testing.T) {
 
 func TestCoverageWithUnenrichedAddresses(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
-	seedAddr(t, s, tr, "1.1.1.1", 4, base)
-	seedAddr(t, s, tr, "2.2.2.2", 4, base)
+	apply(t, s, tr.ID, base, adds("1.1.1.1")...)
+	apply(t, s, tr.ID, base, adds("2.2.2.2")...)
 
 	// One enriched but with no AS determined.
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.1", Family: 4, Error: "no origin"}, base))
@@ -356,11 +347,11 @@ func TestCoverageWithUnenrichedAddresses(t *testing.T) {
 
 func TestTrackerNetworks(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
-	seedAddr(t, s, tr, "1.1.1.1", 4, base)
-	seedAddr(t, s, tr, "1.1.1.2", 4, base)
-	seedAddr(t, s, tr, "2.2.2.2", 4, base)
+	apply(t, s, tr.ID, base, adds("1.1.1.1")...)
+	apply(t, s, tr.ID, base, adds("1.1.1.2")...)
+	apply(t, s, tr.ID, base, adds("2.2.2.2")...)
 
 	// Two addresses in one AS, one in another: two distinct networks.
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.1", Family: 4, ASN: 13335, Org: "Cloudflare", RIR: "arin", Country: "US"}, base))
@@ -379,10 +370,10 @@ func TestTrackerNetworks(t *testing.T) {
 
 func TestListTrackerViewsIncludesNetworks(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 	mustAdd(t, s, "bare.example.com")
-	seedAddr(t, s, tr, "1.1.1.1", 4, base)
+	apply(t, s, tr.ID, base, adds("1.1.1.1")...)
 	must(t, s.PutIPInfo(ctx, IPInfo{IP: "1.1.1.1", Family: 4, ASN: 13335, Org: "Cloudflare"}, base))
 
 	views, err := s.ListTrackerViews(ctx, false)
@@ -399,19 +390,4 @@ func TestListTrackerViewsIncludesNetworks(t *testing.T) {
 			}
 		}
 	}
-}
-
-func countASNChanges(t *testing.T, s *Store, trackerID int64) int {
-	t.Helper()
-	changes, err := s.ChangesFor(context.Background(), trackerID, 200)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, c := range changes {
-		if c.Type == ChangeASNChanged {
-			n++
-		}
-	}
-	return n
 }

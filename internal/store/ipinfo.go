@@ -42,7 +42,7 @@ func (i IPInfo) Holder() string {
 const ipInfoColumns = `ip, family, asn, as_name, prefix, rir, country, allocated,
 	network_name, org, city, latitude, longitude, sources, fetched_at, error`
 
-func scanIPInfo(sc interface{ Scan(...any) error }) (IPInfo, error) {
+func scanIPInfo(sc scanner) (IPInfo, error) {
 	var (
 		i       IPInfo
 		fetched string
@@ -115,25 +115,10 @@ func (s *Store) PutIPInfo(ctx context.Context, info IPInfo, now time.Time) error
 		detail := fmt.Sprintf("%s: AS%d %s -> AS%d %s",
 			info.IP, prevASN, orUnknown(prevName), info.ASN, orUnknown(info.ASName))
 
-		rows, err := tx.QueryContext(ctx, `
-			SELECT tracker_id FROM ip_records WHERE ip = ? AND active = 1`, info.IP)
+		trackerIDs, err := trackersOn(ctx, tx, info.IP)
 		if err != nil {
 			return err
 		}
-		var trackerIDs []int64
-		for rows.Next() {
-			var id int64
-			if err := rows.Scan(&id); err != nil {
-				rows.Close()
-				return err
-			}
-			trackerIDs = append(trackerIDs, id)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			return err
-		}
-
 		for _, id := range trackerIDs {
 			if err := insertChange(ctx, tx, id, ts, ChangeASNChanged, info.IP, info.Family, detail); err != nil {
 				return err
@@ -142,6 +127,27 @@ func (s *Store) PutIPInfo(ctx context.Context, info IPInfo, now time.Time) error
 	}
 
 	return tx.Commit()
+}
+
+// trackersOn lists the trackers currently resolving to an address, so a change
+// of network can be recorded against each of them.
+func trackersOn(ctx context.Context, tx *sql.Tx, ip string) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT tracker_id FROM ip_records WHERE ip = ? AND active = 1`, ip)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func orUnknown(s string) string {
@@ -157,137 +163,89 @@ func (s *Store) IPsNeedingEnrichment(ctx context.Context, maxAge time.Duration, 
 	if limit <= 0 {
 		limit = 500
 	}
-	cutoff := fmtTime(now.Add(-maxAge))
-
-	rows, err := s.db.QueryContext(ctx, `
+	return queryAll(ctx, s, func(sc scanner) (IPRecord, error) {
+		var r IPRecord
+		err := sc.Scan(&r.IP, &r.Family)
+		return r, err
+	}, `
 		SELECT DISTINCT r.ip, r.family
 		FROM ip_records r
 		LEFT JOIN ip_info i ON i.ip = r.ip
 		WHERE r.active = 1 AND r.is_prefix = 0 AND (i.ip IS NULL OR i.fetched_at < ?)
 		ORDER BY COALESCE(i.fetched_at, ''), r.ip
-		LIMIT ?`, cutoff, limit)
+		LIMIT ?`, fmtTime(now.Add(-maxAge)), limit)
+}
+
+// ipInfoSelect opens every query that reads whole placement rows.
+var ipInfoSelect = `SELECT ` + prefixed(ipInfoColumns, "i") + ` FROM ip_info i `
+
+// ipInfoBy runs a placement query and keys the rows by address.
+func (s *Store) ipInfoBy(ctx context.Context, where string, args ...any) (map[string]IPInfo, error) {
+	out := map[string]IPInfo{}
+	err := s.eachRow(ctx, ipInfoSelect+where, args, func(sc scanner) error {
+		info, err := scanIPInfo(sc)
+		if err != nil {
+			return err
+		}
+		out[info.IP] = info
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := []IPRecord{}
-	for rows.Next() {
-		var r IPRecord
-		if err := rows.Scan(&r.IP, &r.Family); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // IPInfoForTracker returns placement keyed by address for one tracker's whole
 // history. Prefix records are keyed by CIDR, taking any one address inside.
 func (s *Store) IPInfoForTracker(ctx context.Context, trackerID int64) (map[string]IPInfo, error) {
-	out := map[string]IPInfo{}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT `+prefixed(ipInfoColumns, "i")+`
-		FROM ip_info i
-		WHERE i.ip IN (SELECT ip FROM ip_records WHERE tracker_id = ?)`, trackerID)
+	out, err := s.ipInfoBy(ctx,
+		`WHERE i.ip IN (SELECT ip FROM ip_records WHERE tracker_id = ?)`, trackerID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		info, err := scanIPInfo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out[info.IP] = info
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	prefixes, err := s.db.QueryContext(ctx, `
-		SELECT `+prefixed(ipInfoColumns, "i")+`
-		FROM ip_info i
+	prefixes, err := s.ipInfoBy(ctx, `
 		WHERE i.prefix IN (SELECT ip FROM ip_records WHERE tracker_id = ? AND is_prefix = 1)
 		GROUP BY i.prefix`, trackerID)
 	if err != nil {
 		return nil, err
 	}
-	defer prefixes.Close()
-
-	for prefixes.Next() {
-		info, err := scanIPInfo(prefixes)
-		if err != nil {
-			return nil, err
-		}
+	for _, info := range prefixes {
 		info.IP = info.Prefix
 		out[info.Prefix] = info
 	}
-	return out, prefixes.Err()
+	return out, nil
 }
 
 // AllIPInfo returns placement for every currently active address, keyed by
 // address, for the list view.
 func (s *Store) AllIPInfo(ctx context.Context) (map[string]IPInfo, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT `+prefixed(ipInfoColumns, "i")+`
-		FROM ip_info i
-		WHERE i.ip IN (SELECT ip FROM ip_records WHERE active = 1)`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := map[string]IPInfo{}
-	for rows.Next() {
-		info, err := scanIPInfo(rows)
-		if err != nil {
-			return nil, err
-		}
-		out[info.IP] = info
-	}
-	return out, rows.Err()
+	return s.ipInfoBy(ctx, `WHERE i.ip IN (SELECT ip FROM ip_records WHERE active = 1)`)
 }
 
 // PrefixMap returns the prefix each enriched address sits in.
 func (s *Store) PrefixMap(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT ip, prefix FROM ip_info WHERE prefix != ''`)
+	out := map[string]string{}
+	err := s.eachRow(ctx, `SELECT ip, prefix FROM ip_info WHERE prefix != ''`,
+		nil, func(sc scanner) error {
+			var ip, prefix string
+			if err := sc.Scan(&ip, &prefix); err != nil {
+				return err
+			}
+			out[ip] = prefix
+			return nil
+		})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := map[string]string{}
-	for rows.Next() {
-		var ip, prefix string
-		if err := rows.Scan(&ip, &prefix); err != nil {
-			return nil, err
-		}
-		out[ip] = prefix
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // KnownPrefixes returns every distinct prefix enrichment has recorded.
 func (s *Store) KnownPrefixes(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	return queryAll(ctx, s, scanString,
 		`SELECT DISTINCT prefix FROM ip_info WHERE prefix != '' ORDER BY prefix`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []string{}
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
 }
 
 // prefixed qualifies a bare column list with a table alias.
@@ -363,21 +321,11 @@ func (s *Store) ByCountry(ctx context.Context, limit int) ([]NetworkStat, error)
 }
 
 func (s *Store) networkStats(ctx context.Context, q string, args ...any) ([]NetworkStat, error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []NetworkStat{}
-	for rows.Next() {
+	return queryAll(ctx, s, func(sc scanner) (NetworkStat, error) {
 		var n NetworkStat
-		if err := rows.Scan(&n.Key, &n.Label, &n.Trackers, &n.IPs); err != nil {
-			return nil, err
-		}
-		out = append(out, n)
-	}
-	return out, rows.Err()
+		err := sc.Scan(&n.Key, &n.Label, &n.Trackers, &n.IPs)
+		return n, err
+	}, q, args...)
 }
 
 // EnrichmentCoverage reports how many active addresses have been enriched.
@@ -409,29 +357,27 @@ type NetworkRef struct {
 // TrackerNetworks returns the distinct networks behind each tracker's active
 // addresses, keyed by tracker id.
 func (s *Store) TrackerNetworks(ctx context.Context) (map[int64][]NetworkRef, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	out := map[int64][]NetworkRef{}
+	err := s.eachRow(ctx, `
 		SELECT DISTINCT r.tracker_id, i.asn,
 		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), i.network_name),
 		       i.rir, i.country
 		FROM ip_records r
 		`+recordInfoJoin+`
 		WHERE r.active = 1
-		ORDER BY r.tracker_id, i.asn`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := map[int64][]NetworkRef{}
-	for rows.Next() {
+		ORDER BY r.tracker_id, i.asn`, nil, func(sc scanner) error {
 		var (
 			id  int64
 			ref NetworkRef
 		)
-		if err := rows.Scan(&id, &ref.ASN, &ref.Holder, &ref.RIR, &ref.Country); err != nil {
-			return nil, err
+		if err := sc.Scan(&id, &ref.ASN, &ref.Holder, &ref.RIR, &ref.Country); err != nil {
+			return err
 		}
 		out[id] = append(out[id], ref)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }

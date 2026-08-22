@@ -41,18 +41,7 @@ func (s *Store) ListEndpoints(ctx context.Context, from, until time.Time) ([]Lis
 		return nil, err
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT t.id, t.name, t.created_at, e.id, e.scheme, e.port, e.path
-		FROM endpoints e
-		JOIN trackers t ON t.id = e.tracker_id
-		WHERE t.enabled = 1 AND t.control = 0 AND t.parked = 0 AND t.bep34_denies = 0`)
-	if err != nil {
-		return nil, fmt.Errorf("read list endpoints: %w", err)
-	}
-	defer rows.Close()
-
-	out := []ListEntry{}
-	for rows.Next() {
+	out, err := queryAll(ctx, s, func(sc scanner) (ListEntry, error) {
 		var (
 			e            ListEntry
 			created      string
@@ -60,46 +49,47 @@ func (s *Store) ListEndpoints(ctx context.Context, from, until time.Time) ([]Lis
 			scheme, path string
 			port         int
 		)
-		if err := rows.Scan(&e.TrackerID, &e.Tracker, &created,
+		if err := sc.Scan(&e.TrackerID, &e.Tracker, &created,
 			&endpointID, &scheme, &port, &path); err != nil {
-			return nil, err
+			return e, err
 		}
+		var err error
 		if e.Added, err = parseTime(created); err != nil {
-			return nil, err
+			return e, err
 		}
 		e.Scheme = scheme
 		e.URL = fmt.Sprintf("%s://%s:%d%s", scheme, e.Tracker, port, path)
 		e.Uptime = win.Endpoints[endpointID]
 		e.Answers = live[endpointID]
-		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		return e, nil
+	}, `
+		SELECT t.id, t.name, t.created_at, e.id, e.scheme, e.port, e.path
+		FROM endpoints e
+		JOIN trackers t ON t.id = e.tracker_id
+		WHERE t.enabled = 1 AND t.control = 0 AND t.parked = 0 AND t.bep34_denies = 0`)
+	if err != nil {
+		return nil, fmt.Errorf("read list endpoints: %w", err)
 	}
 
 	// A prefix record still says the family resolves, so rolling names count.
-	fams, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT tracker_id, family FROM ip_records WHERE active = 1`)
-	if err != nil {
-		return nil, err
-	}
-	defer fams.Close()
 	v4, v6 := map[int64]bool{}, map[int64]bool{}
-	for fams.Next() {
-		var (
-			id     int64
-			family int
-		)
-		if err := fams.Scan(&id, &family); err != nil {
-			return nil, err
-		}
-		if family == 6 {
-			v6[id] = true
-		} else {
-			v4[id] = true
-		}
-	}
-	if err := fams.Err(); err != nil {
+	err = s.eachRow(ctx, `SELECT DISTINCT tracker_id, family FROM ip_records WHERE active = 1`,
+		nil, func(sc scanner) error {
+			var (
+				id     int64
+				family int
+			)
+			if err := sc.Scan(&id, &family); err != nil {
+				return err
+			}
+			if family == 6 {
+				v6[id] = true
+			} else {
+				v4[id] = true
+			}
+			return nil
+		})
+	if err != nil {
 		return nil, err
 	}
 	for i := range out {
@@ -122,20 +112,18 @@ func (s *Store) ListEndpoints(ctx context.Context, from, until time.Time) ([]Lis
 // answeringEndpoints is the set of endpoints with at least one address
 // answering now. probes describes the present, so one live row is enough.
 func (s *Store) answeringEndpoints(ctx context.Context) (map[int64]bool, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT endpoint_id FROM probes WHERE result = ?`, ProbeLive)
+	out := map[int64]bool{}
+	err := s.eachRow(ctx, `SELECT DISTINCT endpoint_id FROM probes WHERE result = ?`,
+		[]any{ProbeLive}, func(sc scanner) error {
+			var id int64
+			if err := sc.Scan(&id); err != nil {
+				return err
+			}
+			out[id] = true
+			return nil
+		})
 	if err != nil {
 		return nil, fmt.Errorf("read answering endpoints: %w", err)
 	}
-	defer rows.Close()
-
-	out := map[int64]bool{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out[id] = true
-	}
-	return out, rows.Err()
+	return out, nil
 }

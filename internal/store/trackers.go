@@ -14,7 +14,7 @@ var ErrNotFound = errors.New("tracker not found")
 const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at,
 	control, parked, reach, reach_checked_at, bep34, bep34_denies`
 
-func scanTracker(sc interface{ Scan(...any) error }) (Tracker, error) {
+func scanTracker(sc scanner) (Tracker, error) {
 	var (
 		t          Tracker
 		created    string
@@ -94,18 +94,7 @@ func (s *Store) RemoveTracker(ctx context.Context, name string, purge bool) erro
 	if purge {
 		q = `DELETE FROM trackers WHERE name = ?`
 	}
-	res, err := s.db.ExecContext(ctx, q, name)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return fmt.Errorf("%q: %w", name, ErrNotFound)
-	}
-	return nil
+	return s.execOne(ctx, name, q, name)
 }
 
 // ListTrackers returns trackers ordered by name, excluding control names.
@@ -131,37 +120,13 @@ func (s *Store) ListParked(ctx context.Context) ([]Tracker, error) {
 }
 
 func (s *Store) queryTrackers(ctx context.Context, q string, args ...any) ([]Tracker, error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	trackers := []Tracker{}
-	for rows.Next() {
-		t, err := scanTracker(rows)
-		if err != nil {
-			return nil, err
-		}
-		trackers = append(trackers, t)
-	}
-	return trackers, rows.Err()
+	return queryAll(ctx, s, scanTracker, q, args...)
 }
 
 // SetControl marks or unmarks a name as a control.
 func (s *Store) SetControl(ctx context.Context, name string, control bool) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE trackers SET control = ? WHERE name = ?`, control, name)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return fmt.Errorf("%q: %w", name, ErrNotFound)
-	}
-	return nil
+	return s.execOne(ctx, name,
+		`UPDATE trackers SET control = ? WHERE name = ?`, control, name)
 }
 
 // SetParked records whether a tracker resolves only to parking addresses,
@@ -270,52 +235,38 @@ func (s *Store) ListTrackerViews(ctx context.Context, includeDisabled bool) ([]T
 	}
 
 	// One pass over the active addresses beats a query per tracker.
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT tracker_id, ip, family FROM ip_records WHERE active = 1 ORDER BY family, ip`)
+	err = s.eachRow(ctx, `
+		SELECT tracker_id, ip, family FROM ip_records WHERE active = 1 ORDER BY family, ip`,
+		nil, func(sc scanner) error {
+			var (
+				id     int64
+				ip     string
+				family int
+			)
+			if err := sc.Scan(&id, &ip, &family); err != nil {
+				return err
+			}
+			i, ok := index[id]
+			if !ok {
+				return nil // disabled tracker excluded from this view
+			}
+			if family == 6 {
+				views[i].IPv6 = append(views[i].IPv6, ip)
+			} else {
+				views[i].IPv4 = append(views[i].IPv4, ip)
+			}
+			return nil
+		})
 	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			id     int64
-			ip     string
-			family int
-		)
-		if err := rows.Scan(&id, &ip, &family); err != nil {
-			return nil, err
-		}
-		i, ok := index[id]
-		if !ok {
-			continue // disabled tracker excluded from this view
-		}
-		if family == 6 {
-			views[i].IPv6 = append(views[i].IPv6, ip)
-		} else {
-			views[i].IPv4 = append(views[i].IPv4, ip)
-		}
-	}
-	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	rolling, err := s.db.QueryContext(ctx, `
-		SELECT tracker_id, family FROM family_state WHERE rolling = 1 ORDER BY family`)
-	if err != nil {
-		return nil, err
-	}
-	defer rolling.Close()
-	for rolling.Next() {
-		var id int64
-		var family int
-		if err := rolling.Scan(&id, &family); err != nil {
-			return nil, err
-		}
+	err = s.eachRollingFamily(ctx, func(id int64, family int) {
 		if i, ok := index[id]; ok {
 			views[i].Rolling = append(views[i].Rolling, family)
 		}
-	}
-	if err := rolling.Err(); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 

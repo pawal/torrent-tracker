@@ -1,6 +1,7 @@
 package prober
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"sort"
@@ -132,7 +133,7 @@ func decode(b []byte) (any, []byte, error) {
 	}
 	switch c := b[0]; {
 	case c == 'i':
-		end := indexByte(b, 'e')
+		end := bytes.IndexByte(b, 'e')
 		if end < 0 {
 			return nil, nil, errTruncated
 		}
@@ -143,7 +144,7 @@ func decode(b []byte) (any, []byte, error) {
 		return n, b[end+1:], nil
 
 	case c >= '0' && c <= '9':
-		colon := indexByte(b, ':')
+		colon := bytes.IndexByte(b, ':')
 		if colon < 0 {
 			return nil, nil, errTruncated
 		}
@@ -200,13 +201,4 @@ func decode(b []byte) (any, []byte, error) {
 		return out, rest[1:], nil
 	}
 	return nil, nil, errBencode
-}
-
-func indexByte(b []byte, c byte) int {
-	for i, got := range b {
-		if got == c {
-			return i
-		}
-	}
-	return -1
 }

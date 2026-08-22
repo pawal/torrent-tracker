@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pawal/torrent-tracker/internal/version"
 )
 
 // Sources are the well-known public tracker lists, usable with Fetch.
@@ -226,7 +228,7 @@ func FetchEndpoints(ctx context.Context, src string) (eps []Endpoint, skipped []
 	if err != nil {
 		return nil, nil, err
 	}
-	req.Header.Set("User-Agent", "torrent-tracker/1.0 (+https://github.com/pawal/torrent-tracker)")
+	req.Header.Set("User-Agent", version.UserAgent)
 
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)

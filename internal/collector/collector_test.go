@@ -2,9 +2,6 @@ package collector
 
 import (
 	"context"
-	"io"
-	"log/slog"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -49,30 +46,16 @@ func (f *fakeResolver) callCount() int {
 
 func testCollector(t *testing.T) (*Collector, *store.Store, *fakeResolver) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "collector.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-
+	st := testStore(t)
 	fake := newFake()
 	c := &Collector{
 		Store:         st,
 		Resolver:      fake,
-		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:           discard(),
 		Concurrency:   4,
 		MissThreshold: 1,
 	}
 	return c, st, fake
-}
-
-func addTracker(t *testing.T, st *store.Store, name string) store.Tracker {
-	t.Helper()
-	tr, _, err := st.AddTracker(context.Background(), name, "test", time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tr
 }
 
 func TestRunOnceRecordsAddresses(t *testing.T) {
@@ -170,16 +153,8 @@ func TestRunOnceDetectsReaddressing(t *testing.T) {
 		t.Fatalf("got %d intervals, want 2 (the old address is history)", len(all))
 	}
 
-	changes, _ := st.ChangesFor(ctx, tr.ID, 100)
-	var added, removed int
-	for _, ch := range changes {
-		switch ch.Type {
-		case store.ChangeIPAdded:
-			added++
-		case store.ChangeIPRemoved:
-			removed++
-		}
-	}
+	added := countKind(t, st, tr.ID, store.ChangeIPAdded)
+	removed := countKind(t, st, tr.ID, store.ChangeIPRemoved)
 	if added != 2 || removed != 1 {
 		t.Errorf("added=%d removed=%d, want 2 and 1", added, removed)
 	}
@@ -572,12 +547,7 @@ func TestRunOnceCollapsesRollingFamilyToPrefix(t *testing.T) {
 		"2600:9000:2094:5c00::1", "2600:9000:2094:7600::1",
 	}
 	for _, ip := range edges {
-		err := st.PutIPInfo(ctx, store.IPInfo{
-			IP: ip, Family: 6, ASN: 16509, Prefix: "2600:9000:2094::/48",
-		}, time.Now().UTC())
-		if err != nil {
-			t.Fatal(err)
-		}
+		enrichedInto(t, st, ip, "2600:9000:2094::/48")
 	}
 
 	// The first three runs are still per-address: detection costs three runs
@@ -667,12 +637,7 @@ func TestRollingCollapsesWithoutEnrichingEveryAddress(t *testing.T) {
 	tr := addTracker(t, st, "cdn.example")
 	fake.set(tr.Name, resolver.TypeA, ok("65.9.46.42"))
 
-	err := st.PutIPInfo(ctx, store.IPInfo{
-		IP: "2600:9000:2094:0::1", Family: 6, ASN: 16509, Prefix: "2600:9000:2094::/48",
-	}, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
+	enrichedInto(t, st, "2600:9000:2094:0::1", "2600:9000:2094::/48")
 
 	for _, ip := range []string{
 		"2600:9000:2094:1400::1", "2600:9000:2094:3c00::1",
@@ -706,12 +671,7 @@ func TestRollingIgnoresUnrelatedPrefixes(t *testing.T) {
 	c.RollAfter = 2
 
 	tr := addTracker(t, st, "elsewhere.example")
-	err := st.PutIPInfo(ctx, store.IPInfo{
-		IP: "2600:9000:2094:0::1", Family: 6, ASN: 16509, Prefix: "2600:9000:2094::/48",
-	}, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
+	enrichedInto(t, st, "2600:9000:2094:0::1", "2600:9000:2094::/48")
 
 	for _, ip := range []string{"2001:db8:1::1", "2001:db8:2::1", "2001:db8:3::1"} {
 		fake.set(tr.Name, resolver.TypeAAAA, ok(ip))

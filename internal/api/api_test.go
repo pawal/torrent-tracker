@@ -17,17 +17,26 @@ import (
 
 var base = time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 
-func testServer(t *testing.T) (http.Handler, *store.Store) {
+// testStore opens an empty database that goes away with the test.
+func testStore(t *testing.T) *store.Store {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	return st
+}
 
+// discard keeps the request log quiet; no test asserts on it.
+func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func testServer(t *testing.T) (http.Handler, *store.Store) {
+	t.Helper()
+	st := testStore(t)
 	srv := &Server{
 		Store: st,
-		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:   discard(),
 		Static: fstest.MapFS{
 			"index.html":    &fstest.MapFile{Data: []byte("<!doctype html><title>app</title>")},
 			"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
@@ -188,26 +197,13 @@ func TestGetTrackerDetailProbeHistory(t *testing.T) {
 	if _, err := st.AddEndpoint(ctx, tr.ID, "udp", 6969, "/announce", base); err != nil {
 		t.Fatal(err)
 	}
-	eps, err := st.EndpointsFor(ctx, tr.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	udp := endpointOf(t, st, tr.ID, "udp")
 
 	// Live for a day, then dead: the first verdict closes and only the second
 	// is still open.
 	now := time.Now().UTC()
-	live := store.Probe{
-		EndpointID: eps[0].ID, IP: "1.2.3.4", Family: 4,
-		Result: store.ProbeLive, Since: now.AddDate(0, 0, -2), CheckedAt: now.AddDate(0, 0, -2),
-	}
-	if err := st.PutProbes(ctx, []int64{eps[0].ID}, []store.Probe{live}, live.CheckedAt); err != nil {
-		t.Fatal(err)
-	}
-	dead := live
-	dead.Result, dead.Since, dead.CheckedAt = store.ProbeDead, now.AddDate(0, 0, -1), now
-	if err := st.PutProbes(ctx, []int64{eps[0].ID}, []store.Probe{dead}, now); err != nil {
-		t.Fatal(err)
-	}
+	putVerdict(t, st, udp, "1.2.3.4", store.ProbeLive, now.AddDate(0, 0, -2))
+	putVerdict(t, st, udp, "1.2.3.4", store.ProbeDead, now.AddDate(0, 0, -1))
 
 	var got struct {
 		History     []store.ProbeInterval  `json:"probe_history"`
@@ -452,13 +448,7 @@ func TestUnknownAPIPathDoesNotServeHTML(t *testing.T) {
 }
 
 func TestServerWithoutStatic(t *testing.T) {
-	st, err := store.Open(filepath.Join(t.TempDir(), "nostatic.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-
-	h := (&Server{Store: st, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Handler()
+	h := (&Server{Store: testStore(t), Log: discard()}).Handler()
 	if rec := get(t, h, "/api/stats"); rec.Code != http.StatusOK {
 		t.Errorf("API should work without an embedded frontend: %d", rec.Code)
 	}

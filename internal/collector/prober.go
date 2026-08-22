@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/prober"
@@ -59,54 +57,13 @@ type ProbeSummary struct {
 	Duration time.Duration
 }
 
-func (p *Prober) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now().UTC()
-}
-
-func (p *Prober) log() *slog.Logger {
-	if p.Log != nil {
-		return p.Log
-	}
-	return slog.Default()
-}
-
-func (p *Prober) concurrency() int {
-	if p.Concurrency > 0 {
-		return p.Concurrency
-	}
-	return 8
-}
-
-func (p *Prober) fanout() int {
-	if p.Fanout > 0 {
-		return p.Fanout
-	}
-	return 4
-}
-
-func (p *Prober) missThreshold() int {
-	if p.MissThreshold > 0 {
-		return p.MissThreshold
-	}
-	return 2
-}
-
-func (p *Prober) samplePerFamily() int {
-	if p.SamplePerFamily > 0 {
-		return p.SamplePerFamily
-	}
-	return 2
-}
-
-func (p *Prober) retention() time.Duration {
-	if p.Retention > 0 {
-		return p.Retention
-	}
-	return 90 * 24 * time.Hour
-}
+func (p *Prober) now() time.Time           { return nowOr(p.Now) }
+func (p *Prober) log() *slog.Logger        { return logOr(p.Log) }
+func (p *Prober) concurrency() int         { return orDefault(p.Concurrency, 8) }
+func (p *Prober) fanout() int              { return orDefault(p.Fanout, 4) }
+func (p *Prober) missThreshold() int       { return orDefault(p.MissThreshold, 2) }
+func (p *Prober) samplePerFamily() int     { return orDefault(p.SamplePerFamily, 2) }
+func (p *Prober) retention() time.Duration { return orDefault(p.Retention, 90*24*time.Hour) }
 
 func (p *Prober) probe() Checker {
 	if p.Probe != nil {
@@ -128,54 +85,40 @@ func (p *Prober) RunOnce(ctx context.Context) (ProbeSummary, error) {
 		return sum, nil
 	}
 
-	var (
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, p.concurrency())
-	)
-
-	for _, t := range targets {
-		if ctx.Err() != nil {
-			break
-		}
-		wg.Add(1)
-		go func(t store.ProbeTarget) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-
-			reach, n, changed, err := p.probeOne(ctx, t)
-
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				if ctx.Err() == nil {
-					p.log().Error("probe failed", "tracker", t.Tracker.Name, "err", err)
-				}
-				sum.Unknown++
-				return
-			}
-			sum.Probes += n
-			switch reach {
-			case store.ReachLive:
-				sum.Live++
-			case store.ReachPartial:
-				sum.Partial++
-			case store.ReachDead:
-				sum.Dead++
-			default:
-				sum.Unknown++
-			}
-			if changed {
-				sum.Changes++
-			}
-		}(t)
+	type outcome struct {
+		name    string
+		reach   store.Reach
+		probes  int
+		changed bool
+		err     error
 	}
-	wg.Wait()
+	results := pool(ctx, p.concurrency(), targets, func(t store.ProbeTarget) outcome {
+		reach, n, changed, err := p.probeOne(ctx, t)
+		return outcome{t.Tracker.Name, reach, n, changed, err}
+	})
+	for _, got := range results {
+		if got.err != nil {
+			if ctx.Err() == nil {
+				p.log().Error("probe failed", "tracker", got.name, "err", got.err)
+			}
+			sum.Unknown++
+			continue
+		}
+		sum.Probes += got.probes
+		switch got.reach {
+		case store.ReachLive:
+			sum.Live++
+		case store.ReachPartial:
+			sum.Partial++
+		case store.ReachDead:
+			sum.Dead++
+		default:
+			sum.Unknown++
+		}
+		if got.changed {
+			sum.Changes++
+		}
+	}
 
 	if n, err := p.Store.PruneProbeHistory(ctx, p.now().Add(-p.retention())); err != nil {
 		p.log().Error("prune probe history", "err", err)
@@ -191,29 +134,13 @@ func (p *Prober) RunOnce(ctx context.Context) (ProbeSummary, error) {
 	return sum, nil
 }
 
-// Run probes immediately, then every interval until ctx is cancelled. The
-// wait is jittered like collection so the two do not march in lockstep.
+// Run probes immediately, then every interval until ctx is cancelled.
 func (p *Prober) Run(ctx context.Context, interval time.Duration) error {
-	if interval <= 0 {
-		interval = 6 * time.Hour
-	}
-	for {
-		if _, err := p.RunOnce(ctx); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+	return every(ctx, orDefault(interval, 6*time.Hour), func() {
+		if _, err := p.RunOnce(ctx); err != nil && ctx.Err() == nil {
 			p.log().Error("probing run failed", "err", err)
 		}
-
-		jitter := time.Duration(rand.Int64N(int64(interval/10) + 1))
-		timer := time.NewTimer(interval + jitter)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
+	})
 }
 
 // probeOne probes every endpoint of one tracker on every address it has, then
@@ -282,30 +209,14 @@ type probeJob struct {
 func (p *Prober) runJobs(ctx context.Context, jobs []probeJob, prev map[probeKey]store.Probe,
 	now time.Time, threshold int,
 ) ([]store.Probe, error) {
-	probes := make([]store.Probe, len(jobs))
+	probes := pool(ctx, p.fanout(), jobs, func(job probeJob) store.Probe {
+		res := p.probe().Probe(ctx, job.target)
+		before, seen := prev[job.key]
+		return merge(job.key, job.key.ip, res, before, seen, now, threshold)
+	})
 
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, p.fanout())
-	for i, job := range jobs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-
-			res := p.probe().Probe(ctx, job.target)
-			before, seen := prev[job.key]
-			probes[i] = merge(job.key, job.key.ip, res, before, seen, now, threshold)
-		}()
-	}
-	wg.Wait()
-
-	// A cancelled pass leaves holes, and rolling those up would read as an
-	// outage.
+	// A cancelled pass measured only part of the name, and rolling that up
+	// would read as an outage.
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}

@@ -3,10 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"net/netip"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -37,41 +34,29 @@ func (f *fakeProvider) Lookup(_ context.Context, ip netip.Addr) (enrich.Info, er
 
 func testEnricher(t *testing.T) (*Enricher, *store.Store, *fakeProvider) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "enrich.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-
+	st := testStore(t)
 	p := &fakeProvider{byIP: map[string]enrich.Info{}}
 	return &Enricher{
 		Store:       st,
 		Provider:    p,
-		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:         discard(),
 		Concurrency: 4,
 	}, st, p
 }
 
-func seedTrackerIP(t *testing.T, st *store.Store, name, ip string, family int) store.Tracker {
+// seedTrackerIP registers a tracker that already resolves to one address, which
+// is the least an enrichment pass has to work on.
+func seedTrackerIP(t *testing.T, st *store.Store, name, ip string) store.Tracker {
 	t.Helper()
-	ctx := context.Background()
-	tr, _, err := st.AddTracker(ctx, name, "test", time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = st.ApplyPlan(ctx, tr.ID, store.Plan{Status: store.StatusOK, Actions: []store.Action{
-		{IP: ip, Family: family, Kind: store.ActionAdd},
-	}}, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
+	tr := addTracker(t, st, name)
+	resolvesTo(t, st, tr.ID, time.Now().UTC(), ip)
 	return tr
 }
 
 func TestEnricherStoresPlacement(t *testing.T) {
 	e, st, p := testEnricher(t)
 	ctx := context.Background()
-	seedTrackerIP(t, st, "a.example.com", "1.2.3.4", 4)
+	seedTrackerIP(t, st, "a.example.com", "1.2.3.4")
 
 	p.byIP["1.2.3.4"] = enrich.Info{
 		ASN: 13335, ASName: "CLOUDFLARENET", RIR: "arin", Country: "US",
@@ -102,7 +87,7 @@ func TestEnricherStoresPlacement(t *testing.T) {
 func TestEnricherSkipsFreshAddresses(t *testing.T) {
 	e, st, p := testEnricher(t)
 	ctx := context.Background()
-	seedTrackerIP(t, st, "a.example.com", "1.2.3.4", 4)
+	seedTrackerIP(t, st, "a.example.com", "1.2.3.4")
 	p.byIP["1.2.3.4"] = enrich.Info{ASN: 1}
 
 	if _, err := e.RunOnce(ctx); err != nil {
@@ -127,7 +112,7 @@ func TestEnricherSkipsFreshAddresses(t *testing.T) {
 func TestEnricherRecordsFailures(t *testing.T) {
 	e, st, p := testEnricher(t)
 	ctx := context.Background()
-	seedTrackerIP(t, st, "a.example.com", "1.2.3.4", 4)
+	seedTrackerIP(t, st, "a.example.com", "1.2.3.4")
 	p.err = errors.New("registry unreachable")
 
 	sum, err := e.RunOnce(ctx)
@@ -158,7 +143,7 @@ func TestEnricherRespectsBatchLimit(t *testing.T) {
 	ctx := context.Background()
 
 	for _, ip := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"} {
-		seedTrackerIP(t, st, ip+".example.com", ip, 4)
+		seedTrackerIP(t, st, ip+".example.com", ip)
 		p.byIP[ip] = enrich.Info{ASN: 1}
 	}
 
@@ -186,7 +171,7 @@ func TestEnricherEmptyQueue(t *testing.T) {
 func TestEnricherHandlesUnknownAddress(t *testing.T) {
 	e, st, _ := testEnricher(t)
 	ctx := context.Background()
-	seedTrackerIP(t, st, "a.example.com", "192.0.2.1", 4)
+	seedTrackerIP(t, st, "a.example.com", "192.0.2.1")
 
 	sum, err := e.RunOnce(ctx)
 	if err != nil {
@@ -211,7 +196,7 @@ func TestEnricherConcurrent(t *testing.T) {
 	const n = 30
 	for i := 0; i < n; i++ {
 		ip := netip.AddrFrom4([4]byte{192, 0, 2, byte(i + 1)}).String()
-		seedTrackerIP(t, st, ip+".example.com", ip, 4)
+		seedTrackerIP(t, st, ip+".example.com", ip)
 		p.byIP[ip] = enrich.Info{ASN: 64500 + i, RIR: "arin"}
 	}
 

@@ -5,39 +5,10 @@ import (
 	"time"
 )
 
-// newListTracker builds what a client list needs from a name: when it was
-// added, one announce endpoint, and the addresses it resolves to.
-func newListTracker(t *testing.T, s *Store, name string, added time.Time, scheme string, port int, ips ...string) (int64, int64) {
-	t.Helper()
-	ctx := t.Context()
-
-	tr, _, err := s.AddTracker(ctx, name, "test", added)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.AddEndpoint(ctx, tr.ID, scheme, port, "/announce", added); err != nil {
-		t.Fatal(err)
-	}
-	actions := make([]Action, 0, len(ips))
-	for _, ip := range ips {
-		actions = append(actions, Action{IP: ip, Family: Family(ip), Kind: ActionAdd})
-	}
-	if err := s.ApplyPlan(ctx, tr.ID, Plan{
-		Status: StatusOK, StatusChanged: true, Actions: actions,
-	}, added); err != nil {
-		t.Fatal(err)
-	}
-	eps, err := s.EndpointsFor(ctx, tr.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tr.ID, eps[0].ID
-}
-
 func TestListEndpointsBuildsAnnounceURLs(t *testing.T) {
 	s := testStore(t)
 	_, endpointID := newListTracker(t, s, "tracker.example.com", base, "udp", 6969, "1.2.3.4", "2001:db8::1")
-	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeLive, base))
 
 	got, err := s.ListEndpoints(t.Context(), base, base.Add(time.Hour))
 	if err != nil {
@@ -131,8 +102,8 @@ func TestListEndpointsOrdersByUptime(t *testing.T) {
 	_, worst := newListTracker(t, s, "a-worst.example.com", base, "udp", 6969, "1.2.3.4")
 	_, best := newListTracker(t, s, "z-best.example.com", base, "udp", 6969, "1.2.3.5")
 
-	probeRun(t, s, worst, base, verdict(worst, "1.2.3.4", ProbeDead, base, base))
-	probeRun(t, s, best, base, verdict(best, "1.2.3.5", ProbeLive, base, base))
+	probeRun(t, s, worst, base, verdict("1.2.3.4", ProbeDead, base))
+	probeRun(t, s, best, base, verdict("1.2.3.5", ProbeLive, base))
 
 	got, err := s.ListEndpoints(t.Context(), base, end)
 	if err != nil {

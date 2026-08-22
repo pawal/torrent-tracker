@@ -2,9 +2,7 @@ package collector
 
 import (
 	"context"
-	"io"
-	"log/slog"
-	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,42 +61,31 @@ type probeFixture struct {
 	now     time.Time
 }
 
-func newProbeFixture(t *testing.T, name string, addrs []string, endpoints [][2]any) *probeFixture {
+// endpoint is one announce endpoint a fixture should offer.
+type endpoint struct {
+	scheme string
+	port   int
+}
+
+func newProbeFixture(t *testing.T, name string, addrs []string, endpoints ...endpoint) *probeFixture {
 	t.Helper()
-	ctx := context.Background()
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "probe.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-
-	tr, _, err := st.AddTracker(ctx, name, "test", now)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := testStore(t)
+	tr := addTracker(t, st, name)
 	for _, ep := range endpoints {
-		if _, err := st.AddEndpoint(ctx, tr.ID, ep[0].(string), ep[1].(int), "/announce", now); err != nil {
+		if _, err := st.AddEndpoint(t.Context(), tr.ID, ep.scheme, ep.port, "/announce", now); err != nil {
 			t.Fatal(err)
 		}
 	}
-
-	// Give the tracker its addresses the way a collection pass would.
-	var actions []store.Action
-	for _, ip := range addrs {
-		actions = append(actions, store.Action{Kind: store.ActionAdd, IP: ip, Family: store.Family(ip)})
-	}
-	if err := st.ApplyPlan(ctx, tr.ID, store.Plan{Status: store.StatusOK, Actions: actions}, now); err != nil {
-		t.Fatal(err)
-	}
+	resolvesTo(t, st, tr.ID, now, addrs...)
 
 	checker := &fakeChecker{results: map[string]prober.Result{}}
 	f := &probeFixture{store: st, tracker: tr, checker: checker, now: now}
 	f.prober = &Prober{
 		Store:         st,
 		Probe:         checker,
-		Log:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:           discard(),
 		MissThreshold: 2,
 		Now:           func() time.Time { return f.now },
 	}
@@ -125,23 +112,13 @@ func (f *probeFixture) reach(t *testing.T) store.Reach {
 
 func (f *probeFixture) changeTypes(t *testing.T) []string {
 	t.Helper()
-	changes, err := f.store.ChangesFor(context.Background(), f.tracker.ID, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var kinds []string
-	for _, c := range changes {
-		switch c.Type {
-		case store.ChangeTrackerUp, store.ChangeTrackerDown, store.ChangeTrackerPartial:
-			kinds = append(kinds, c.Type)
-		}
-	}
-	return kinds
+	return changeKinds(t, f.store, f.tracker.ID,
+		store.ChangeTrackerUp, store.ChangeTrackerDown, store.ChangeTrackerPartial)
 }
 
 func TestProberEveryAddressAnswers(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4", "1.2.3.5"},
-		[][2]any{{"udp", 6969}})
+		endpoint{"udp", 6969})
 	f.checker.results["udp:6969 1.2.3.4"] = live()
 	f.checker.results["udp:6969 1.2.3.5"] = live()
 
@@ -159,7 +136,7 @@ func TestProberEveryAddressAnswers(t *testing.T) {
 // takes two passes, because one silent round is not yet proof.
 func TestProberOneStaleAddressIsPartial(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4", "1.2.3.5"},
-		[][2]any{{"udp", 6969}})
+		endpoint{"udp", 6969})
 	f.checker.results["udp:6969 1.2.3.4"] = live()
 
 	f.run(t)
@@ -174,7 +151,7 @@ func TestProberOneStaleAddressIsPartial(t *testing.T) {
 	}
 
 	want := []string{store.ChangeTrackerPartial, store.ChangeTrackerUp}
-	if kinds := f.changeTypes(t); len(kinds) != 2 || kinds[0] != want[0] || kinds[1] != want[1] {
+	if kinds := f.changeTypes(t); !slices.Equal(kinds, want) {
 		t.Errorf("changes = %v, want %v (newest first)", kinds, want)
 	}
 }
@@ -183,7 +160,7 @@ func TestProberOneStaleAddressIsPartial(t *testing.T) {
 // the https vhost has been retired.
 func TestProberEndpointsDisagree(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
-		[][2]any{{"udp", 6969}, {"https", 443}})
+		endpoint{"udp", 6969}, endpoint{"https", 443})
 	f.checker.results["udp:6969 1.2.3.4"] = live()
 
 	f.run(t)
@@ -207,7 +184,7 @@ func TestProberEndpointsDisagree(t *testing.T) {
 // often as the threshold allows, mirroring how addresses are retired.
 func TestProberMissThreshold(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
-		[][2]any{{"udp", 6969}})
+		endpoint{"udp", 6969})
 	f.checker.results["udp:6969 1.2.3.4"] = live()
 	f.run(t)
 
@@ -227,7 +204,7 @@ func TestProberMissThreshold(t *testing.T) {
 	}
 
 	want := []string{store.ChangeTrackerDown, store.ChangeTrackerUp}
-	if kinds := f.changeTypes(t); len(kinds) != 2 || kinds[0] != want[0] || kinds[1] != want[1] {
+	if kinds := f.changeTypes(t); !slices.Equal(kinds, want) {
 		t.Errorf("changes = %v, want %v (newest first)", kinds, want)
 	}
 }
@@ -236,7 +213,7 @@ func TestProberMissThreshold(t *testing.T) {
 // other round never accumulates its way to dead.
 func TestProberRecoveryResetsMisses(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
-		[][2]any{{"udp", 6969}})
+		endpoint{"udp", 6969})
 	f.checker.results["udp:6969 1.2.3.4"] = live()
 	f.run(t)
 
@@ -262,7 +239,7 @@ func TestProberRecoveryResetsMisses(t *testing.T) {
 // live rather than sliding to unknown on the CDN's say-so.
 func TestProberUnknownKeepsTheLastVerdict(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
-		[][2]any{{"https", 443}})
+		endpoint{"https", 443})
 	f.checker.results["https:443 1.2.3.4"] = live()
 	f.run(t)
 
@@ -295,7 +272,7 @@ func TestProberUnknownKeepsTheLastVerdict(t *testing.T) {
 // A name that resolves to nothing has nothing to probe. Calling that dead
 // would report a resolver outage as every tracker dying at once.
 func TestProberNoAddressesIsUnknown(t *testing.T) {
-	f := newProbeFixture(t, "tracker.example.com", nil, [][2]any{{"udp", 6969}})
+	f := newProbeFixture(t, "tracker.example.com", nil, endpoint{"udp", 6969})
 
 	sum := f.run(t)
 	if sum.Probes != 0 {
@@ -315,7 +292,7 @@ func TestProberNoAddressesIsUnknown(t *testing.T) {
 // its addresses hit at once is a name that throttles us.
 func TestProberFanoutOverlapsProbesUpToTheBound(t *testing.T) {
 	addrs := []string{"1.2.3.4", "1.2.3.5", "1.2.3.6", "1.2.3.7", "1.2.3.8", "1.2.3.9"}
-	f := newProbeFixture(t, "tracker.example.com", addrs, [][2]any{{"udp", 6969}})
+	f := newProbeFixture(t, "tracker.example.com", addrs, endpoint{"udp", 6969})
 	for _, ip := range addrs {
 		f.checker.results["udp:6969 "+ip] = live()
 	}
@@ -359,7 +336,7 @@ func TestProberFanoutOverlapsProbesUpToTheBound(t *testing.T) {
 func TestProberFanoutKeepsVerdictsWithTheirTarget(t *testing.T) {
 	addrs := []string{"1.2.3.4", "1.2.3.5", "1.2.3.6", "1.2.3.7"}
 	f := newProbeFixture(t, "tracker.example.com", addrs,
-		[][2]any{{"udp", 6969}, {"https", 443}})
+		endpoint{"udp", 6969}, endpoint{"https", 443})
 	// Only udp, and only on half the addresses: eight probes, two answers.
 	answering := map[string]bool{"udp:6969 1.2.3.5": true, "udp:6969 1.2.3.7": true}
 	for key := range answering {
@@ -400,7 +377,7 @@ func TestProberFanoutKeepsVerdictsWithTheirTarget(t *testing.T) {
 // switched off in between is the smallest way to see that.
 func TestProberRecordsHistoryAcrossPasses(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
-		[][2]any{{"udp", 6969}})
+		endpoint{"udp", 6969})
 	f.checker.results["udp:6969 1.2.3.4"] = live()
 	f.run(t)
 
@@ -433,7 +410,7 @@ func TestProberRecordsHistoryAcrossPasses(t *testing.T) {
 // thing that runs often enough to apply it.
 func TestProberPrunesHistoryPastRetention(t *testing.T) {
 	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
-		[][2]any{{"udp", 6969}})
+		endpoint{"udp", 6969})
 	f.prober.Retention = 24 * time.Hour
 	f.checker.results["udp:6969 1.2.3.4"] = live()
 	f.run(t)

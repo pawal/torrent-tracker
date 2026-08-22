@@ -56,6 +56,23 @@ func putVerdict(t *testing.T, st *store.Store, endpointID int64, ip string, resu
 	}
 }
 
+// endpointOf finds a tracker's endpoint on one scheme, for the tests that add a
+// second endpoint after the fixture built the first.
+func endpointOf(t *testing.T, st *store.Store, trackerID int64, scheme string) int64 {
+	t.Helper()
+	eps, err := st.EndpointsFor(t.Context(), trackerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range eps {
+		if e.Scheme == scheme {
+			return e.ID
+		}
+	}
+	t.Fatalf("tracker %d has no %s endpoint", trackerID, scheme)
+	return 0
+}
+
 // urls reads a list response back into the announce URLs it carries, checking
 // it was served as text along the way.
 func urls(t *testing.T, rec *httptest.ResponseRecorder) []string {
@@ -196,16 +213,9 @@ func TestListLiveIsPerEndpoint(t *testing.T) {
 	if _, err := st.AddEndpoint(ctx, trackerID, "https", 443, "/announce", now.Add(-20*day)); err != nil {
 		t.Fatal(err)
 	}
-	eps, err := st.EndpointsFor(ctx, trackerID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	putVerdict(t, st, udp, "1.2.3.4", store.ProbeLive, now.Add(-20*day))
-	for _, e := range eps {
-		if e.Scheme == "https" {
-			putVerdict(t, st, e.ID, "1.2.3.4", store.ProbeDead, now.Add(-20*day))
-		}
-	}
+	putVerdict(t, st, endpointOf(t, st, trackerID, "https"), "1.2.3.4",
+		store.ProbeDead, now.Add(-20*day))
 
 	// The name is up, but on only one of its two announce URLs. A list working
 	// per name would hand a client the one that does not answer.
@@ -295,15 +305,8 @@ func TestListEndpointsOfOneTrackerCountOnce(t *testing.T) {
 	if _, err := st.AddEndpoint(ctx, trackerID, "https", 443, "/announce", now.Add(-20*day)); err != nil {
 		t.Fatal(err)
 	}
-	eps, err := st.EndpointsFor(ctx, trackerID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range eps {
-		if e.Scheme == "https" {
-			putVerdict(t, st, e.ID, "1.2.3.4", store.ProbeLive, now.Add(-20*day))
-		}
-	}
+	putVerdict(t, st, endpointOf(t, st, trackerID, "https"), "1.2.3.4",
+		store.ProbeLive, now.Add(-20*day))
 	if err := st.PutIPInfo(ctx, store.IPInfo{
 		IP: "1.2.3.4", Family: 4, ASN: 13335, ASName: "test", Prefix: "1.2.3.4/32",
 	}, now); err != nil {

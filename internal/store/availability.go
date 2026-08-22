@@ -144,9 +144,12 @@ func (s *Store) AvailabilityOver(ctx context.Context, from, until time.Time) (Av
 		return w, nil
 	}
 
+	window := interval{start: from, end: until}
+	trackers, endpoints := map[int64]*spans{}, map[int64]*spans{}
+
 	// probe_history holds the closed intervals and probes the open one, so the
 	// two together cover the axis. Unknown verdicts stay out entirely.
-	rows, err := s.db.QueryContext(ctx, `
+	err := s.eachRow(ctx, `
 		SELECT e.tracker_id, h.endpoint_id, h.result, h.since, h.until
 		FROM probe_history h
 		JOIN endpoints e ON e.id = h.endpoint_id
@@ -158,41 +161,34 @@ func (s *Store) AvailabilityOver(ctx context.Context, from, until time.Time) (Av
 		JOIN endpoints e ON e.id = p.endpoint_id
 		JOIN trackers t ON t.id = e.tracker_id
 		WHERE t.enabled = 1 AND t.control = 0 AND p.result != ?`,
-		ProbeUnknown, fmtTime(from), fmtTime(until), ProbeUnknown)
+		[]any{ProbeUnknown, fmtTime(from), fmtTime(until), ProbeUnknown}, func(sc scanner) error {
+			var (
+				trackerID, endpointID int64
+				result                ProbeResult
+				since, ends           string
+			)
+			if err := sc.Scan(&trackerID, &endpointID, &result, &since, &ends); err != nil {
+				return err
+			}
+			start, err := parseTime(since)
+			if err != nil {
+				return err
+			}
+			end, err := parseTime(ends)
+			if err != nil {
+				return err
+			}
+			iv, ok := interval{start: start, end: end}.clip(window)
+			if !ok {
+				return nil
+			}
+			live := result == ProbeLive
+			spansFor(trackers, trackerID).add(iv, live)
+			spansFor(endpoints, endpointID).add(iv, live)
+			return nil
+		})
 	if err != nil {
 		return w, fmt.Errorf("read probe intervals: %w", err)
-	}
-	defer rows.Close()
-
-	window := interval{start: from, end: until}
-	trackers, endpoints := map[int64]*spans{}, map[int64]*spans{}
-	for rows.Next() {
-		var (
-			trackerID, endpointID int64
-			result                ProbeResult
-			since, ends           string
-		)
-		if err := rows.Scan(&trackerID, &endpointID, &result, &since, &ends); err != nil {
-			return w, err
-		}
-		start, err := parseTime(since)
-		if err != nil {
-			return w, err
-		}
-		end, err := parseTime(ends)
-		if err != nil {
-			return w, err
-		}
-		iv, ok := interval{start: start, end: end}.clip(window)
-		if !ok {
-			continue
-		}
-		live := result == ProbeLive
-		spansFor(trackers, trackerID).add(iv, live)
-		spansFor(endpoints, endpointID).add(iv, live)
-	}
-	if err := rows.Err(); err != nil {
-		return w, err
 	}
 
 	for id, sp := range trackers {

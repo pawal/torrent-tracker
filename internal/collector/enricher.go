@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/netip"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/enrich"
@@ -39,40 +38,11 @@ type EnrichSummary struct {
 	Duration   time.Duration
 }
 
-func (e *Enricher) now() time.Time {
-	if e.Now != nil {
-		return e.Now()
-	}
-	return time.Now().UTC()
-}
-
-func (e *Enricher) log() *slog.Logger {
-	if e.Log != nil {
-		return e.Log
-	}
-	return slog.Default()
-}
-
-func (e *Enricher) maxAge() time.Duration {
-	if e.MaxAge > 0 {
-		return e.MaxAge
-	}
-	return 30 * 24 * time.Hour
-}
-
-func (e *Enricher) batchLimit() int {
-	if e.BatchLimit > 0 {
-		return e.BatchLimit
-	}
-	return 250
-}
-
-func (e *Enricher) concurrency() int {
-	if e.Concurrency > 0 {
-		return e.Concurrency
-	}
-	return 4
-}
+func (e *Enricher) now() time.Time        { return nowOr(e.Now) }
+func (e *Enricher) log() *slog.Logger     { return logOr(e.Log) }
+func (e *Enricher) maxAge() time.Duration { return orDefault(e.MaxAge, 30*24*time.Hour) }
+func (e *Enricher) batchLimit() int       { return orDefault(e.BatchLimit, 250) }
+func (e *Enricher) concurrency() int      { return orDefault(e.Concurrency, 4) }
 
 // RunOnce enriches active addresses that are new or stale.
 func (e *Enricher) RunOnce(ctx context.Context) (EnrichSummary, error) {
@@ -87,38 +57,15 @@ func (e *Enricher) RunOnce(ctx context.Context) (EnrichSummary, error) {
 		return sum, nil
 	}
 
-	var (
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, e.concurrency())
-	)
-
-	for _, rec := range pending {
-		if ctx.Err() != nil {
-			break
+	for _, ok := range pool(ctx, e.concurrency(), pending, func(rec store.IPRecord) bool {
+		return e.enrichOne(ctx, rec)
+	}) {
+		if ok {
+			sum.Enriched++
+		} else {
+			sum.Failed++
 		}
-		wg.Add(1)
-		go func(rec store.IPRecord) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-
-			ok := e.enrichOne(ctx, rec)
-
-			mu.Lock()
-			defer mu.Unlock()
-			if ok {
-				sum.Enriched++
-			} else {
-				sum.Failed++
-			}
-		}(rec)
 	}
-	wg.Wait()
 
 	sum.Duration = e.now().Sub(start)
 	e.log().Info("enrichment finished",

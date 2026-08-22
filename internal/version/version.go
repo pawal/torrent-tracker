@@ -24,3 +24,7 @@ func DNSLib() string {
 	}
 	return ""
 }
+
+// UserAgent identifies us to the HTTP trackers we probe, the registries we
+// query and the tracker lists we fetch.
+const UserAgent = "torrent-tracker/1.0 (+https://github.com/pawal/torrent-tracker)"

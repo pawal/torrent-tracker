@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"testing"
 	"time"
 )
@@ -12,7 +11,7 @@ import (
 // fact the status simply held from one sample to the next.
 func TestResolutionHistoryCoalescesUnchangedStatus(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	// ok, ok, ok, servfail, ok — four hourly passes then a recovery, which is
@@ -66,7 +65,7 @@ func TestResolutionHistoryCoalescesUnchangedStatus(t *testing.T) {
 // growing for as long as the daemon runs.
 func TestResolutionHistoryWindowAndPruning(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	old := base.AddDate(0, 0, -100)

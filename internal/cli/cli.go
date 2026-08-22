@@ -365,8 +365,7 @@ func cmdList(ctx context.Context, st *store.Store, _ *slog.Logger, args []string
 		return nil
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATUS\tCHECKED\tIPV4\tIPV6")
+	tw := table("NAME", "STATUS", "CHECKED", "IPV4", "IPV6")
 	for _, v := range views {
 		status := string(v.LastStatus)
 		if status == "" {
@@ -442,10 +441,7 @@ func cmdRemove(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 	}
 
 	for _, raw := range fs.Args() {
-		host, err := trackerlist.Host(raw)
-		if err != nil {
-			host = strings.ToLower(strings.TrimSpace(raw))
-		}
+		host := hostArg(raw)
 		if err := st.RemoveTracker(ctx, host, *purge); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			continue
@@ -609,12 +605,28 @@ func cmdSources(_ context.Context, _ *store.Store, _ *slog.Logger, _ []string) e
 	}
 	sort.Strings(names)
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tURL")
+	tw := table("NAME", "URL")
 	for _, n := range names {
 		fmt.Fprintf(tw, "%s\t%s\n", n, trackerlist.Sources[n])
 	}
 	return tw.Flush()
+}
+
+// table is the aligned-column writer every listing prints through.
+func table(header ...string) *tabwriter.Writer {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, strings.Join(header, "\t"))
+	return tw
+}
+
+// hostArg reads a tracker name from the command line, accepting a full announce
+// URL as well as a bare hostname. Anything unparseable is passed through so the
+// store can be the one to say it does not know the name.
+func hostArg(raw string) string {
+	if host, err := trackerlist.Host(raw); err == nil {
+		return host
+	}
+	return strings.ToLower(strings.TrimSpace(raw))
 }
 
 func writeJSON(w io.Writer, v any) error {
@@ -667,8 +679,7 @@ func cmdParked(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 		return nil
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSTATUS\tCHECKED")
+	tw := table("NAME", "STATUS", "CHECKED")
 	for _, t := range parked {
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", t.Name, orDash(string(t.LastStatus)), ago(t.LastCheckedAt))
 	}
@@ -711,8 +722,7 @@ func cmdShared(ctx context.Context, st *store.Store, _ *slog.Logger, args []stri
 		return nil
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ADDRESS\tNAMES\tSTILL\tNETWORK\tTRACKERS")
+	tw := table("ADDRESS", "NAMES", "STILL", "NETWORK", "TRACKERS")
 	for _, a := range shared {
 		fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", a.IP, len(a.Trackers),
 			yesNo(a.Active), orDash(network(a.Network)), strings.Join(a.Trackers, ", "))
@@ -766,10 +776,7 @@ func cmdControl(ctx context.Context, st *store.Store, _ *slog.Logger, args []str
 	}
 
 	for _, raw := range fs.Args() {
-		host, err := trackerlist.Host(raw)
-		if err != nil {
-			host = strings.ToLower(strings.TrimSpace(raw))
-		}
+		host := hostArg(raw)
 		if err := st.SetControl(ctx, host, !*unset); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			continue

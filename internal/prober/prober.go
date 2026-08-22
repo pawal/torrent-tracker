@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pawal/torrent-tracker/internal/version"
 )
 
 // State is the outcome of one probe.
@@ -76,7 +78,7 @@ func (p *Prober) userAgent() string {
 	if p.UserAgent != "" {
 		return p.UserAgent
 	}
-	return "torrent-tracker/1.0 (+https://github.com/pawal/torrent-tracker)"
+	return version.UserAgent
 }
 
 // Probe checks one endpoint on one address.

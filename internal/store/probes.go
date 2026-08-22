@@ -127,7 +127,7 @@ func (s *Store) AddEndpoint(ctx context.Context, trackerID int64, scheme string,
 
 const endpointColumns = `id, tracker_id, scheme, port, path, first_seen`
 
-func scanEndpoint(sc interface{ Scan(...any) error }) (Endpoint, error) {
+func scanEndpoint(sc scanner) (Endpoint, error) {
 	var (
 		e     Endpoint
 		first string
@@ -142,58 +142,36 @@ func scanEndpoint(sc interface{ Scan(...any) error }) (Endpoint, error) {
 
 // EndpointsFor returns a tracker's announce endpoints.
 func (s *Store) EndpointsFor(ctx context.Context, trackerID int64) ([]Endpoint, error) {
-	rows, err := s.db.QueryContext(ctx,
+	return queryAll(ctx, s, scanEndpoint,
 		`SELECT `+endpointColumns+` FROM endpoints WHERE tracker_id = ? ORDER BY scheme, port, path`, trackerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+}
 
-	out := []Endpoint{}
-	for rows.Next() {
-		e, err := scanEndpoint(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+func scanProbe(sc scanner) (Probe, error) {
+	var (
+		p              Probe
+		since, checked string
+	)
+	if err := sc.Scan(&p.EndpointID, &p.IP, &p.Family, &p.Result, &p.Reason,
+		&p.RTTms, &p.MissCount, &since, &checked, &p.Signature, &p.Kind,
+		&p.Server); err != nil {
+		return p, err
 	}
-	return out, rows.Err()
+	var err error
+	if p.Since, err = parseTime(since); err != nil {
+		return p, err
+	}
+	p.CheckedAt, err = parseTime(checked)
+	return p, err
 }
 
 // ProbesFor returns the latest probe results across a tracker's endpoints.
 func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return queryAll(ctx, s, scanProbe, `
 		SELECT p.endpoint_id, p.ip, p.family, p.result, p.reason, p.rtt_ms,
 		       p.miss_count, p.since, p.checked_at, p.signature, p.signature_kind, p.server
 		FROM probes p JOIN endpoints e ON e.id = p.endpoint_id
 		WHERE e.tracker_id = ?
 		ORDER BY e.scheme, e.port, p.family, p.ip`, trackerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []Probe{}
-	for rows.Next() {
-		var (
-			p              Probe
-			since, checked string
-		)
-		if err := rows.Scan(&p.EndpointID, &p.IP, &p.Family, &p.Result, &p.Reason,
-			&p.RTTms, &p.MissCount, &since, &checked, &p.Signature, &p.Kind,
-			&p.Server); err != nil {
-			return nil, err
-		}
-		var err error
-		if p.Since, err = parseTime(since); err != nil {
-			return nil, err
-		}
-		if p.CheckedAt, err = parseTime(checked); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
 }
 
 // PutProbes replaces the results for the given endpoints in one transaction.
@@ -236,23 +214,8 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 	}
 
 	for _, id := range endpointIDs {
-		rows, err := tx.QueryContext(ctx, `SELECT ip FROM probes WHERE endpoint_id = ?`, id)
+		stale, err := staleAddresses(ctx, tx, id, keep[id])
 		if err != nil {
-			return err
-		}
-		var stale []string
-		for rows.Next() {
-			var ip string
-			if err := rows.Scan(&ip); err != nil {
-				rows.Close()
-				return err
-			}
-			if !keep[id][ip] {
-				stale = append(stale, ip)
-			}
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
 			return err
 		}
 		for _, ip := range stale {
@@ -266,6 +229,28 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 		}
 	}
 	return tx.Commit()
+}
+
+// staleAddresses lists the addresses stored for an endpoint that this round did
+// not probe. Their intervals are closed rather than left claiming the present.
+func staleAddresses(ctx context.Context, tx *sql.Tx, endpointID int64, keep map[string]bool) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT ip FROM probes WHERE endpoint_id = ?`, endpointID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stale []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		if !keep[ip] {
+			stale = append(stale, ip)
+		}
+	}
+	return stale, rows.Err()
 }
 
 // ProbeInterval is one stretch of time an address held one verdict on one
@@ -313,38 +298,31 @@ func archiveProbe(ctx context.Context, tx *sql.Tx, endpointID int64, ip string, 
 	return nil
 }
 
+func scanProbeInterval(sc scanner) (ProbeInterval, error) {
+	var (
+		iv           ProbeInterval
+		start, until string
+	)
+	if err := sc.Scan(&iv.EndpointID, &iv.IP, &iv.Family, &iv.Result, &iv.Reason,
+		&start, &until); err != nil {
+		return iv, err
+	}
+	var err error
+	if iv.Since, err = parseTime(start); err != nil {
+		return iv, err
+	}
+	iv.Until, err = parseTime(until)
+	return iv, err
+}
+
 // ProbeHistoryFor returns the closed probe intervals overlapping the window
 // starting at since, oldest first. Open intervals live in probes.
 func (s *Store) ProbeHistoryFor(ctx context.Context, trackerID int64, since time.Time) ([]ProbeInterval, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return queryAll(ctx, s, scanProbeInterval, `
 		SELECT h.endpoint_id, h.ip, h.family, h.result, h.reason, h.since, h.until
 		FROM probe_history h JOIN endpoints e ON e.id = h.endpoint_id
 		WHERE e.tracker_id = ? AND h.until >= ?
 		ORDER BY h.endpoint_id, h.ip, h.id`, trackerID, fmtTime(since))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []ProbeInterval{}
-	for rows.Next() {
-		var (
-			iv           ProbeInterval
-			start, until string
-		)
-		if err := rows.Scan(&iv.EndpointID, &iv.IP, &iv.Family, &iv.Result, &iv.Reason,
-			&start, &until); err != nil {
-			return nil, err
-		}
-		if iv.Since, err = parseTime(start); err != nil {
-			return nil, err
-		}
-		if iv.Until, err = parseTime(until); err != nil {
-			return nil, err
-		}
-		out = append(out, iv)
-	}
-	return out, rows.Err()
 }
 
 // PruneProbeHistory drops intervals that ended before cutoff, so the table is
@@ -390,29 +368,27 @@ func (s *Store) SetReach(ctx context.Context, trackerID int64, reach Reach, deta
 // ReachSummary counts enabled trackers per reachability state. Never-probed
 // names count as unknown, so the totals add up.
 func (s *Store) ReachSummary(ctx context.Context) (map[Reach]int, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT reach, COUNT(*) FROM trackers
-		WHERE enabled = 1 AND control = 0 GROUP BY reach`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	out := map[Reach]int{}
-	for rows.Next() {
+	err := s.eachRow(ctx, `
+		SELECT reach, COUNT(*) FROM trackers
+		WHERE enabled = 1 AND control = 0 GROUP BY reach`, nil, func(sc scanner) error {
 		var (
 			r Reach
 			n int
 		)
-		if err := rows.Scan(&r, &n); err != nil {
-			return nil, err
+		if err := sc.Scan(&r, &n); err != nil {
+			return err
 		}
 		if r == "" {
 			r = ReachUnknown
 		}
 		out[r] += n
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // EndpointCoverage reports how much of the registry can be probed at all.
@@ -498,17 +474,6 @@ func (s *Store) SoftwareStats(ctx context.Context, limit int) ([]SoftwareStat, e
 	if limit <= 0 || limit > 200 {
 		limit = 25
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT p.signature, p.signature_kind, e.tracker_id, p.endpoint_id
-		FROM probes p
-		JOIN endpoints e ON e.id = p.endpoint_id
-		JOIN trackers t ON t.id = e.tracker_id
-		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	type cluster struct {
 		SoftwareStat
 		trackers  map[int64]bool
@@ -516,13 +481,18 @@ func (s *Store) SoftwareStats(ctx context.Context, limit int) ([]SoftwareStat, e
 		variants  map[string]bool
 	}
 	groups := map[string]*cluster{}
-	for rows.Next() {
+	err := s.eachRow(ctx, `
+		SELECT DISTINCT p.signature, p.signature_kind, e.tracker_id, p.endpoint_id
+		FROM probes p
+		JOIN endpoints e ON e.id = p.endpoint_id
+		JOIN trackers t ON t.id = e.tracker_id
+		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''`, nil, func(sc scanner) error {
 		var (
 			sig, kind             string
 			trackerID, endpointID int64
 		)
-		if err := rows.Scan(&sig, &kind, &trackerID, &endpointID); err != nil {
-			return nil, err
+		if err := sc.Scan(&sig, &kind, &trackerID, &endpointID); err != nil {
+			return err
 		}
 		grouped := groupSignature(sig, prober.Kind(kind))
 		key := kind + "\x00" + grouped
@@ -541,8 +511,9 @@ func (s *Store) SoftwareStats(ctx context.Context, limit int) ([]SoftwareStat, e
 		if sig != grouped {
 			c.variants[sig] = true
 		}
-	}
-	if err := rows.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 
@@ -612,64 +583,47 @@ func (s *Store) ProbeTargets(ctx context.Context) ([]ProbeTarget, error) {
 		targets = append(targets, ProbeTarget{Tracker: t})
 	}
 
-	eps, err := s.db.QueryContext(ctx,
-		`SELECT `+endpointColumns+` FROM endpoints ORDER BY tracker_id, scheme, port, path`)
+	err = s.eachRow(ctx,
+		`SELECT `+endpointColumns+` FROM endpoints ORDER BY tracker_id, scheme, port, path`,
+		nil, func(sc scanner) error {
+			e, err := scanEndpoint(sc)
+			if err != nil {
+				return err
+			}
+			if i, ok := index[e.TrackerID]; ok {
+				targets[i].Endpoints = append(targets[i].Endpoints, e)
+			}
+			return nil
+		})
 	if err != nil {
-		return nil, err
-	}
-	defer eps.Close()
-	for eps.Next() {
-		e, err := scanEndpoint(eps)
-		if err != nil {
-			return nil, err
-		}
-		if i, ok := index[e.TrackerID]; ok {
-			targets[i].Endpoints = append(targets[i].Endpoints, e)
-		}
-	}
-	if err := eps.Err(); err != nil {
 		return nil, err
 	}
 
-	addrs, err := s.db.QueryContext(ctx,
-		`SELECT tracker_id, ip FROM ip_records WHERE active = 1 AND is_prefix = 0 ORDER BY family, ip`)
+	err = s.eachRow(ctx,
+		`SELECT tracker_id, ip FROM ip_records WHERE active = 1 AND is_prefix = 0 ORDER BY family, ip`,
+		nil, func(sc scanner) error {
+			var (
+				id int64
+				ip string
+			)
+			if err := sc.Scan(&id, &ip); err != nil {
+				return err
+			}
+			if i, ok := index[id]; ok {
+				targets[i].Addrs = append(targets[i].Addrs, ip)
+			}
+			return nil
+		})
 	if err != nil {
-		return nil, err
-	}
-	defer addrs.Close()
-	for addrs.Next() {
-		var (
-			id int64
-			ip string
-		)
-		if err := addrs.Scan(&id, &ip); err != nil {
-			return nil, err
-		}
-		if i, ok := index[id]; ok {
-			targets[i].Addrs = append(targets[i].Addrs, ip)
-		}
-	}
-	if err := addrs.Err(); err != nil {
 		return nil, err
 	}
 
-	rolling, err := s.db.QueryContext(ctx,
-		`SELECT tracker_id, family FROM family_state WHERE rolling = 1 ORDER BY family`)
-	if err != nil {
-		return nil, err
-	}
-	defer rolling.Close()
-	for rolling.Next() {
-		var id int64
-		var family int
-		if err := rolling.Scan(&id, &family); err != nil {
-			return nil, err
-		}
+	err = s.eachRollingFamily(ctx, func(id int64, family int) {
 		if i, ok := index[id]; ok {
 			targets[i].Rolling = append(targets[i].Rolling, family)
 		}
-	}
-	if err := rolling.Err(); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 

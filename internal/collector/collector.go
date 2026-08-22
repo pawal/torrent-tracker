@@ -6,11 +6,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"net/netip"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/bep34"
@@ -53,33 +51,11 @@ type Summary struct {
 	Duration time.Duration
 }
 
-func (c *Collector) now() time.Time {
-	if c.Now != nil {
-		return c.Now()
-	}
-	return time.Now().UTC()
-}
+func (c *Collector) now() time.Time    { return nowOr(c.Now) }
+func (c *Collector) log() *slog.Logger { return logOr(c.Log) }
+func (c *Collector) concurrency() int  { return orDefault(c.Concurrency, 8) }
 
-func (c *Collector) log() *slog.Logger {
-	if c.Log != nil {
-		return c.Log
-	}
-	return slog.Default()
-}
-
-func (c *Collector) concurrency() int {
-	if c.Concurrency > 0 {
-		return c.Concurrency
-	}
-	return 8
-}
-
-func (c *Collector) retention() time.Duration {
-	if c.Retention > 0 {
-		return c.Retention
-	}
-	return 90 * 24 * time.Hour
-}
+func (c *Collector) retention() time.Duration { return orDefault(c.Retention, 90*24*time.Hour) }
 
 func (c *Collector) rollAfter() int {
 	switch {
@@ -117,44 +93,28 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 	}
 	sum := Summary{RunID: runID, Trackers: len(trackers)}
 
-	var (
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, c.concurrency())
-	)
-
-	for _, t := range trackers {
-		if ctx.Err() != nil {
-			break
-		}
-		wg.Add(1)
-		go func(t store.Tracker) {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				return
-			}
-
-			plan, err := c.collectOne(ctx, t, prefixes, parking)
-
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				sum.Errors++
-				c.log().Error("collect failed", "tracker", t.Name, "err", err)
-				return
-			}
-			if plan.Status == store.StatusOK {
-				sum.OK++
-			} else {
-				sum.Errors++
-			}
-			sum.Changes += plan.Changes()
-		}(t)
+	type outcome struct {
+		name string
+		plan store.Plan
+		err  error
 	}
-	wg.Wait()
+	results := pool(ctx, c.concurrency(), trackers, func(t store.Tracker) outcome {
+		plan, err := c.collectOne(ctx, t, prefixes, parking)
+		return outcome{t.Name, plan, err}
+	})
+	for _, got := range results {
+		if got.err != nil {
+			sum.Errors++
+			c.log().Error("collect failed", "tracker", got.name, "err", got.err)
+			continue
+		}
+		if got.plan.Status == store.StatusOK {
+			sum.OK++
+		} else {
+			sum.Errors++
+		}
+		sum.Changes += got.plan.Changes()
+	}
 
 	if n, err := c.Store.PruneLookups(ctx, c.now().Add(-c.retention())); err != nil {
 		c.log().Error("prune lookups", "err", err)
@@ -376,30 +336,14 @@ func (c *Collector) stopProbing(ctx context.Context, t store.Tracker) error {
 	return err
 }
 
-// Run collects immediately, then every interval until ctx is cancelled. Each
-// wait is jittered by up to 10% to avoid hammering the resolver in lockstep.
+// Run collects immediately, then every interval until ctx is cancelled.
 func (c *Collector) Run(ctx context.Context, interval time.Duration) error {
-	if interval <= 0 {
-		interval = time.Hour
-	}
-	for {
-		if _, err := c.RunOnce(ctx); err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
+	return every(ctx, orDefault(interval, time.Hour), func() {
+		if _, err := c.RunOnce(ctx); err != nil && ctx.Err() == nil {
 			c.log().Error("collection run failed", "err", err)
 		}
 		if c.AfterRun != nil && ctx.Err() == nil {
 			c.AfterRun(ctx)
 		}
-
-		jitter := time.Duration(rand.Int63n(int64(interval/10) + 1))
-		timer := time.NewTimer(interval + jitter)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
+	})
 }

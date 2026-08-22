@@ -276,24 +276,21 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 		return st, err
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT last_status, COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 GROUP BY last_status`)
+	err := s.eachRow(ctx, `
+		SELECT last_status, COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 GROUP BY last_status`,
+		nil, func(sc scanner) error {
+			var status Status
+			var n int
+			if err := sc.Scan(&status, &n); err != nil {
+				return err
+			}
+			if status == "" {
+				status = "unchecked"
+			}
+			st.ByStatus[status] = n
+			return nil
+		})
 	if err != nil {
-		return st, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var status Status
-		var n int
-		if err := rows.Scan(&status, &n); err != nil {
-			return st, err
-		}
-		if status == "" {
-			status = "unchecked"
-		}
-		st.ByStatus[status] = n
-	}
-	if err := rows.Err(); err != nil {
 		return st, err
 	}
 

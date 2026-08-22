@@ -9,21 +9,23 @@ import (
 	"github.com/pawal/torrent-tracker/internal/store"
 )
 
+// trackerNamed reads a tracker back, for the assertions about what a pass
+// stored on it.
+func trackerNamed(t *testing.T, st *store.Store, name string) store.Tracker {
+	t.Helper()
+	got, err := st.TrackerByName(t.Context(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
 // publishes scripts a name that resolves and answers the given TXT records.
 func publishes(fake *fakeResolver, name string, txts ...string) {
 	fake.set(name, resolver.TypeA, resolver.Result{
 		Status: store.StatusOK, Addrs: []string{"1.2.3.4"},
 	})
 	fake.set(name, resolver.TypeTXT, resolver.Result{Status: store.StatusOK, TXT: txts})
-}
-
-func trackerNamed(t *testing.T, st *store.Store, name string) store.Tracker {
-	t.Helper()
-	got, err := st.TrackerByName(context.Background(), name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return got
 }
 
 func TestCollectRecordsPreferences(t *testing.T) {
@@ -159,18 +161,8 @@ func TestCollectClearsWithdrawnRecord(t *testing.T) {
 	if got.BEP34 != "" || got.BEP34Denies {
 		t.Errorf("record = %q denies=%v, want both cleared", got.BEP34, got.BEP34Denies)
 	}
-	changes, err := st.ChangesFor(ctx, tr.ID, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, ch := range changes {
-		if ch.Type == store.ChangeBEP34Removed {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("no bep34_removed in %v; withdrawing a record is news", changes)
+	if countKind(t, st, tr.ID, store.ChangeBEP34Removed) != 1 {
+		t.Error("no bep34_removed was recorded; withdrawing a record is news")
 	}
 }
 
@@ -195,17 +187,7 @@ func TestCollectAdoptsAdvertisedEndpointOnce(t *testing.T) {
 	if len(eps) != 1 {
 		t.Errorf("got %d endpoints after three passes, want 1", len(eps))
 	}
-	changes, err := st.ChangesFor(ctx, tr.ID, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, ch := range changes {
-		if ch.Type == store.ChangeBEP34Added {
-			n++
-		}
-	}
-	if n != 1 {
+	if n := countKind(t, st, tr.ID, store.ChangeBEP34Added); n != 1 {
 		t.Errorf("recorded the record %d times, want once", n)
 	}
 }

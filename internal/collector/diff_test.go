@@ -267,6 +267,25 @@ func cdn(suffixes ...string) resolver.Result {
 	return resolver.Result{Status: store.StatusOK, Addrs: addrs}
 }
 
+// runs threads a sequence of answers through Diff, carrying the family
+// bookkeeping from one run to the next the way the collector does, and returns
+// the last plan. check, if set, sees every plan as it is made.
+func runs(states map[int]store.FamilyState, opts Options, answers []resolver.Result,
+	check func(i int, p store.Plan),
+) store.Plan {
+	var plan store.Plan
+	for i, answer := range answers {
+		plan = Diff(nil, states, store.StatusOK, Observation{A: nodata(), AAAA: answer}, opts)
+		for _, st := range plan.States {
+			states[st.Family] = st
+		}
+		if check != nil {
+			check(i, plan)
+		}
+	}
+	return plan
+}
+
 // stateFor picks one family's bookkeeping out of a plan. Both families get a
 // state on every run, including the one answering NODATA, so index order is
 // not something to rely on.
@@ -298,21 +317,15 @@ func rollOpts(rollAfter int) Options {
 func TestRollingStartsAfterConsecutiveChanges(t *testing.T) {
 	opts := rollOpts(3)
 	states := map[int]store.FamilyState{}
-	prev := []store.IPRecord{}
 
 	// Run 1 establishes the baseline; runs 2 and 3 each change the set. The
 	// third change is what tips the family over.
 	answers := []resolver.Result{cdn("1400"), cdn("3c00"), cdn("5c00"), cdn("7600")}
-	var plan store.Plan
-	for i, a := range answers {
-		plan = Diff(prev, states, store.StatusOK, Observation{A: nodata(), AAAA: a}, opts)
-		for _, st := range plan.States {
-			states[st.Family] = st
-		}
+	plan := runs(states, opts, answers, func(i int, _ store.Plan) {
 		if i < len(answers)-1 && states[6].Rolling {
 			t.Fatalf("rolling after %d runs, want it to wait for %d changed runs", i+1, opts.RollAfter)
 		}
-	}
+	})
 
 	if !states[6].Rolling {
 		t.Fatalf("family 6 not rolling after %d changed runs: %+v", len(answers)-1, states[6])
@@ -414,21 +427,12 @@ func TestRollingCatchesAlternatingPools(t *testing.T) {
 	opts := rollOpts(3)
 	opts.SteadyAfter = 3
 	states := map[int]store.FamilyState{}
-	prev := []store.IPRecord{}
 
 	// Two pools, each held for two runs before the swap: change, hold, change,
 	// hold, ... so no two changes are ever adjacent.
 	a, b := cdn("1400"), cdn("3c00")
 	answers := []resolver.Result{a, a, b, b, a, a, b}
-
-	var plan store.Plan
-	for _, answer := range answers {
-		plan = Diff(prev, states, store.StatusOK,
-			Observation{A: nodata(), AAAA: answer}, opts)
-		for _, st := range plan.States {
-			states[st.Family] = st
-		}
-	}
+	plan := runs(states, opts, answers, nil)
 
 	if !states[6].Rolling {
 		t.Fatalf("family 6 never rolled over %d alternating runs: %+v", len(answers), states[6])
@@ -445,23 +449,16 @@ func TestRollingIgnoresAOneOffRenumbering(t *testing.T) {
 	opts := rollOpts(3)
 	opts.SteadyAfter = 3
 	states := map[int]store.FamilyState{}
-	prev := []store.IPRecord{}
 
 	// One change, then long enough at the new address set to count as settled,
 	// then another single change much later.
 	a, b, c := cdn("1400"), cdn("3c00"), cdn("5c00")
-	answers := []resolver.Result{a, b, b, b, b, b, c, c, c, c}
-
-	for _, answer := range answers {
-		plan := Diff(prev, states, store.StatusOK,
-			Observation{A: nodata(), AAAA: answer}, opts)
-		for _, st := range plan.States {
-			states[st.Family] = st
-		}
-		if states[6].Rolling {
-			t.Fatalf("rolling after a single renumbering: %+v", states[6])
-		}
-	}
+	runs(states, opts, []resolver.Result{a, b, b, b, b, b, c, c, c, c},
+		func(int, store.Plan) {
+			if states[6].Rolling {
+				t.Fatalf("rolling after a single renumbering: %+v", states[6])
+			}
+		})
 	if states[6].Churn != 0 {
 		t.Errorf("churn = %d after settling, want it cleared", states[6].Churn)
 	}

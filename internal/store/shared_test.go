@@ -5,25 +5,6 @@ import (
 	"time"
 )
 
-// resolves points a tracker at addresses as of when, creating it if need be.
-func resolves(t *testing.T, s *Store, name string, when time.Time, ips ...string) Tracker {
-	t.Helper()
-	tr, _, err := s.AddTracker(t.Context(), name, "test", when)
-	if err != nil {
-		t.Fatal(err)
-	}
-	actions := make([]Action, 0, len(ips))
-	for _, ip := range ips {
-		actions = append(actions, Action{IP: ip, Family: Family(ip), Kind: ActionAdd})
-	}
-	if err := s.ApplyPlan(t.Context(), tr.ID, Plan{
-		Status: StatusOK, StatusChanged: true, Actions: actions,
-	}, when); err != nil {
-		t.Fatal(err)
-	}
-	return tr
-}
-
 func sharedNames(shared []SharedAddress, ip string) []string {
 	for _, a := range shared {
 		if a.IP == ip {

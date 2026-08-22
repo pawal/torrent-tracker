@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pawal/torrent-tracker/internal/version"
 )
 
 // IANA publishes which RIR serves which address range. Using the bootstrap
@@ -260,7 +262,7 @@ func (r *RDAP) get(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/rdap+json, application/json")
-	req.Header.Set("User-Agent", "torrent-tracker/1.0 (+https://github.com/pawal/torrent-tracker)")
+	req.Header.Set("User-Agent", version.UserAgent)
 
 	resp, err := r.client().Do(req)
 	if err != nil {

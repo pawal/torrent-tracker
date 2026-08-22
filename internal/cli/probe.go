@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"sort"
-	"text/tabwriter"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/collector"
@@ -156,8 +155,7 @@ func cmdReach(ctx context.Context, st *store.Store, _ *slog.Logger, args []strin
 	}
 	sort.Strings(states)
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tREACH\tDNS\tPROBED")
+	tw := table("NAME", "REACH", "DNS", "PROBED")
 	for _, t := range filtered {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
 			t.Name, orDash(string(t.Reach)), orDash(string(t.LastStatus)), ago(t.ReachCheckedAt))

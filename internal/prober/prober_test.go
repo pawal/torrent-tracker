@@ -1,12 +1,8 @@
 package prober
 
 import (
-	"context"
 	"encoding/binary"
-	"net"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,51 +11,10 @@ import (
 	"time"
 )
 
-// udpTracker stands in for a BEP 15 tracker. reply decides what it sends back
-// for each connect request, so a test can be a healthy tracker, a broken one,
-// or something else entirely that happens to be listening on the port.
-func udpTracker(t *testing.T, reply func(req []byte) []byte) (host string, port int) {
-	t.Helper()
-	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close() })
-
-	go func() {
-		buf := make([]byte, 1024)
-		for {
-			n, addr, err := conn.ReadFrom(buf)
-			if err != nil {
-				return
-			}
-			if out := reply(buf[:n]); out != nil {
-				conn.WriteTo(out, addr)
-			}
-		}
-	}()
-
-	addr := conn.LocalAddr().(*net.UDPAddr)
-	return addr.IP.String(), addr.Port
-}
-
-// connectReply is the 16-byte answer a healthy tracker gives, echoing the
-// transaction id the client chose.
-func connectReply(req []byte) []byte {
-	out := make([]byte, 16)
-	binary.BigEndian.PutUint32(out[0:4], actionConnect)
-	copy(out[4:8], req[12:16]) // transaction id
-	binary.BigEndian.PutUint64(out[8:16], 0x1122334455667788)
-	return out
-}
-
 func TestProbeUDPLive(t *testing.T) {
 	ip, port := udpTracker(t, connectReply)
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "tracker.example.com", IP: ip, Scheme: "udp", Port: port, Path: "/announce",
-	})
+	got := probe(t, "udp", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -75,10 +30,7 @@ func TestProbeUDPErrorActionIsLive(t *testing.T) {
 		return out
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	if got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "udp", Port: port,
-	}); got.State != Live {
+	if got := probe(t, "udp", ip, port); got.State != Live {
 		t.Errorf("state = %q, want live", got.State)
 	}
 }
@@ -93,8 +45,7 @@ func TestProbeUDPWrongTransactionID(t *testing.T) {
 		return out
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
+	got := probe(t, "udp", ip, port)
 	if got.State != Dead {
 		t.Errorf("state = %q, want dead", got.State)
 	}
@@ -106,8 +57,8 @@ func TestProbeUDPWrongTransactionID(t *testing.T) {
 func TestProbeUDPSilence(t *testing.T) {
 	ip, port := udpTracker(t, func([]byte) []byte { return nil })
 
-	p := &Prober{Timeout: 300 * time.Millisecond}
-	got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
+	got := (&Prober{Timeout: 300 * time.Millisecond}).Probe(t.Context(),
+		Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
 	if got.State != Dead {
 		t.Errorf("state = %q, want dead", got.State)
 	}
@@ -130,8 +81,7 @@ func TestProbeUDPRetransmitsAfterSilence(t *testing.T) {
 		return connectReply(req)
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
+	got := probe(t, "udp", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -145,9 +95,9 @@ func TestProbeUDPRetransmitsAfterSilence(t *testing.T) {
 func TestProbeUDPRetransmissionStaysWithinTheTimeout(t *testing.T) {
 	ip, port := udpTracker(t, func([]byte) []byte { return nil })
 
-	p := &Prober{Timeout: 400 * time.Millisecond}
 	start := time.Now()
-	got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
+	got := (&Prober{Timeout: 400 * time.Millisecond}).Probe(t.Context(),
+		Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
 	elapsed := time.Since(start)
 
 	if got.State != Dead {
@@ -172,46 +122,12 @@ func TestProbeUDPAnsweredIsNotRetransmitted(t *testing.T) {
 		return out
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	if got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "udp", Port: port,
-	}); got.State != Dead {
+	if got := probe(t, "udp", ip, port); got.State != Dead {
 		t.Errorf("state = %q, want dead", got.State)
 	}
 	if n := sent.Load(); n != 1 {
 		t.Errorf("tracker saw %d requests, want 1", n)
 	}
-}
-
-// httpTracker runs a local HTTP server and returns its address split into the
-// pieces a Target needs.
-func httpTracker(t *testing.T, h http.HandlerFunc) (srv *httptest.Server, ip string, port int) {
-	t.Helper()
-	srv = httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-
-	u, err := url.Parse(srv.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err = strconv.Atoi(u.Port())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return srv, u.Hostname(), port
-}
-
-// question names which of the prober's three requests this is. Two of them share
-// the /announce path and differ only in what they leave out, so the path alone
-// cannot tell a test what was asked.
-func question(r *http.Request) string {
-	switch {
-	case r.URL.Path == "/scrape":
-		return "scrape"
-	case r.URL.Query().Has("info_hash"):
-		return "announce"
-	}
-	return "incomplete"
 }
 
 // Scrape is the polite check: it asks about the tracker without pretending to be
@@ -224,10 +140,7 @@ func TestProbeHTTPScrape(t *testing.T) {
 		w.Write([]byte("d14:failure reason28:scrape requires query stringe"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "tracker.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -246,10 +159,7 @@ func TestProbeHTTPFailureReasonIsLive(t *testing.T) {
 		w.Write([]byte("d14:failure reason21:torrent not registerede"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	if got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	}); got.State != Live {
+	if got := probe(t, "http", ip, port); got.State != Live {
 		t.Errorf("state = %q, want live", got.State)
 	}
 }
@@ -267,10 +177,7 @@ func TestProbeHTTPFallsBackToAnnounce(t *testing.T) {
 		w.Write([]byte("d8:intervali1800e5:peerslee"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -296,10 +203,7 @@ func TestProbeHTTPUninformativeScrapeTriesAnnounce(t *testing.T) {
 		w.Write([]byte("d14:failure reason17:missing info_hashe"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -322,10 +226,7 @@ func TestProbeHTTPAnnounceCannotUnseatALiveScrape(t *testing.T) {
 		http.Error(w, "go away", http.StatusForbidden)
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Errorf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -351,10 +252,7 @@ func TestProbeHTTPProvokesAFailureText(t *testing.T) {
 		w.Write([]byte("d8:completei1e10:incompletei0e8:intervali1800e5:peers0:e"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -380,10 +278,7 @@ func TestProbeHTTPDoesNotProvokeWhenAlreadyNamed(t *testing.T) {
 		w.Write([]byte("d14:failure reason31:no info_hash parameter suppliede"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if want := []string{"scrape", "announce"}; !slices.Equal(asked, want) {
 		t.Errorf("asked %v, want %v", asked, want)
 	}
@@ -403,10 +298,7 @@ func TestProbeHTTPProvokingCannotChangeTheVerdict(t *testing.T) {
 		w.Write([]byte("d8:intervali1800e5:peers0:e"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Errorf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -425,10 +317,7 @@ func TestProbeHTTPDeadEndpointIsNotProvoked(t *testing.T) {
 		http.NotFound(w, r)
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	if got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	}); got.State != Dead {
+	if got := probe(t, "http", ip, port); got.State != Dead {
 		t.Errorf("state = %q, want dead", got.State)
 	}
 	if want := []string{"scrape", "announce"}; !slices.Equal(asked, want) {
@@ -447,11 +336,7 @@ func TestProbeHTTPThrottlingIsUnknown(t *testing.T) {
 			http.Error(w, "slow down", status)
 		})
 
-		p := &Prober{Timeout: 2 * time.Second}
-		got := p.Probe(context.Background(), Target{
-			Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-		})
-		if got.State != Unknown {
+		if got := probe(t, "http", ip, port); got.State != Unknown {
 			t.Errorf("HTTP %d: state = %q, want unknown", status, got.State)
 		}
 		// Retrying against announce would only add to the load.
@@ -468,10 +353,7 @@ func TestProbeHTTPParkingPage(t *testing.T) {
 		w.Write([]byte("<html><body>This domain is for sale</body></html>"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Dead {
 		t.Fatalf("state = %q, want dead", got.State)
 	}
@@ -489,8 +371,9 @@ func TestProbeHTTPSendsHostHeader(t *testing.T) {
 		w.Write([]byte("d5:filesdee"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	p.Probe(context.Background(), Target{
+	// The one case that cares which hostname is presented, so it does not go
+	// through the shared helper.
+	(&Prober{Timeout: probeTimeout}).Probe(t.Context(), Target{
 		Host: "tracker.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
 	})
 	want := "tracker.example.com:" + strconv.Itoa(port)
@@ -500,14 +383,10 @@ func TestProbeHTTPSendsHostHeader(t *testing.T) {
 }
 
 func TestProbeRejectsUnusableTargets(t *testing.T) {
-	p := &Prober{Timeout: time.Second}
-
-	if got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: "", Scheme: "udp", Port: 80}); got.State != Unknown {
+	if got := probe(t, "udp", "", 80); got.State != Unknown {
 		t.Errorf("empty address: state = %q, want unknown", got.State)
 	}
-	if got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: "127.0.0.1", Scheme: "wss", Port: 443,
-	}); got.State != Unknown {
+	if got := probe(t, "wss", "127.0.0.1", 443); got.State != Unknown {
 		t.Errorf("websocket scheme: state = %q, want unknown", got.State)
 	}
 }

@@ -3,6 +3,7 @@ package enrich
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/pawal/torrent-tracker/internal/resolver"
@@ -25,6 +26,12 @@ func (f *fakeResolver) Lookup(_ context.Context, name string, _ resolver.RRType)
 
 func txt(records ...string) resolver.Result {
 	return resolver.Result{Status: store.StatusOK, TXT: records}
+}
+
+// newCymru wires a provider to a resolver that answers only what it is given.
+func newCymru(answers map[string]resolver.Result) (*Cymru, *fakeResolver) {
+	f := &fakeResolver{answers: answers}
+	return &Cymru{Resolver: f}, f
 }
 
 func TestOriginQName(t *testing.T) {
@@ -139,13 +146,12 @@ func TestParseASName(t *testing.T) {
 }
 
 func TestCymruLookup(t *testing.T) {
-	f := &fakeResolver{answers: map[string]resolver.Result{
+	c, _ := newCymru(map[string]resolver.Result{
 		"4.3.2.1.origin.asn.cymru.com": txt("13335 | 1.2.3.0/24 | US | arin | 2011-11-01"),
 		"AS13335.asn.cymru.com":        txt("13335 | US | arin | 2010-07-14 | CLOUDFLARENET - Cloudflare, Inc., US"),
-	}}
-	c := &Cymru{Resolver: f}
+	})
 
-	got, err := c.Lookup(context.Background(), netip.MustParseAddr("1.2.3.4"))
+	got, err := c.Lookup(t.Context(), netip.MustParseAddr("1.2.3.4"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,24 +167,23 @@ func TestCymruLookup(t *testing.T) {
 }
 
 func TestCymruLookupIPv6UsesOrigin6(t *testing.T) {
-	f := &fakeResolver{answers: map[string]resolver.Result{}}
-	c := &Cymru{Resolver: f}
+	c, f := newCymru(map[string]resolver.Result{})
 
-	c.Lookup(context.Background(), netip.MustParseAddr("2001:db8::1"))
+	c.Lookup(t.Context(), netip.MustParseAddr("2001:db8::1"))
 
 	if len(f.asked) == 0 {
 		t.Fatal("no query was made")
 	}
-	if want := "origin6.asn.cymru.com"; !hasSuffix(f.asked[0], want) {
+	if want := "origin6.asn.cymru.com"; !strings.HasSuffix(f.asked[0], want) {
 		t.Errorf("queried %q, want a name under %q", f.asked[0], want)
 	}
 }
 
 // Unannounced space is NXDOMAIN, which is an answer rather than a failure.
 func TestCymruLookupUnannounced(t *testing.T) {
-	c := &Cymru{Resolver: &fakeResolver{answers: map[string]resolver.Result{}}}
+	c, _ := newCymru(map[string]resolver.Result{})
 
-	got, err := c.Lookup(context.Background(), netip.MustParseAddr("192.0.2.1"))
+	got, err := c.Lookup(t.Context(), netip.MustParseAddr("192.0.2.1"))
 	if err != nil {
 		t.Errorf("NXDOMAIN should not be an error, got %v", err)
 	}
@@ -188,24 +193,22 @@ func TestCymruLookupUnannounced(t *testing.T) {
 }
 
 func TestCymruLookupResolverFailure(t *testing.T) {
-	f := &fakeResolver{answers: map[string]resolver.Result{
+	c, _ := newCymru(map[string]resolver.Result{
 		"4.3.2.1.origin.asn.cymru.com": {Status: store.StatusServFail, Err: "SERVFAIL"},
-	}}
-	c := &Cymru{Resolver: f}
+	})
 
-	if _, err := c.Lookup(context.Background(), netip.MustParseAddr("1.2.3.4")); err == nil {
+	if _, err := c.Lookup(t.Context(), netip.MustParseAddr("1.2.3.4")); err == nil {
 		t.Error("a resolver failure should be reported as an error")
 	}
 }
 
 // A missing AS-name record must not discard the origin data we already have.
 func TestCymruLookupSurvivesMissingASName(t *testing.T) {
-	f := &fakeResolver{answers: map[string]resolver.Result{
+	c, _ := newCymru(map[string]resolver.Result{
 		"4.3.2.1.origin.asn.cymru.com": txt("13335 | 1.2.3.0/24 | US | arin | 2011-11-01"),
-	}}
-	c := &Cymru{Resolver: f}
+	})
 
-	got, err := c.Lookup(context.Background(), netip.MustParseAddr("1.2.3.4"))
+	got, err := c.Lookup(t.Context(), netip.MustParseAddr("1.2.3.4"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,8 +227,4 @@ func TestPrefixBits(t *testing.T) {
 	if got := prefixBits("nonsense"); got != -1 {
 		t.Errorf("got %d, want -1", got)
 	}
-}
-
-func hasSuffix(s, suffix string) bool {
-	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }

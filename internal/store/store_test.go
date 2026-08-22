@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -9,27 +8,6 @@ import (
 	"testing"
 	"time"
 )
-
-var base = time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
-
-func testStore(t *testing.T) *Store {
-	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s
-}
-
-func mustAdd(t *testing.T, s *Store, name string) Tracker {
-	t.Helper()
-	tr, _, err := s.AddTracker(context.Background(), name, "test", base)
-	if err != nil {
-		t.Fatalf("AddTracker(%q): %v", name, err)
-	}
-	return tr
-}
 
 func TestOpenIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reopen.db")
@@ -47,7 +25,7 @@ func TestOpenIsIdempotent(t *testing.T) {
 	}
 	defer s2.Close()
 
-	got, err := s2.ListTrackers(context.Background(), false)
+	got, err := s2.ListTrackers(t.Context(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +48,7 @@ func TestInMemoryStoresAreIsolated(t *testing.T) {
 
 	mustAdd(t, a, "only-in-a.example.com")
 
-	got, err := b.ListTrackers(context.Background(), false)
+	got, err := b.ListTrackers(t.Context(), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +59,7 @@ func TestInMemoryStoresAreIsolated(t *testing.T) {
 
 func TestAddTracker(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	tr, created, err := s.AddTracker(ctx, "a.example.com", "list.txt", base)
 	if err != nil {
@@ -115,7 +93,7 @@ func TestAddTracker(t *testing.T) {
 
 func TestRemoveTrackerKeepsHistory(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	plan := Plan{Status: StatusOK, StatusChanged: true, Actions: []Action{
@@ -159,7 +137,7 @@ func TestRemoveTrackerKeepsHistory(t *testing.T) {
 
 func TestRemoveTrackerPurge(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	plan := Plan{Status: StatusOK, Actions: []Action{{IP: "1.2.3.4", Family: 4, Kind: ActionAdd}}}
@@ -187,7 +165,7 @@ func TestRemoveTrackerPurge(t *testing.T) {
 
 func TestRemoveMissingTracker(t *testing.T) {
 	s := testStore(t)
-	err := s.RemoveTracker(context.Background(), "nope.example.com", false)
+	err := s.RemoveTracker(t.Context(), "nope.example.com", false)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
@@ -195,7 +173,7 @@ func TestRemoveMissingTracker(t *testing.T) {
 
 func TestTrackerByName(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	mustAdd(t, s, "a.example.com")
 
 	got, err := s.TrackerByName(ctx, "a.example.com")
@@ -214,7 +192,7 @@ func TestTrackerByName(t *testing.T) {
 // retired, and later comes back as a fresh interval.
 func TestApplyPlanIntervalLifecycle(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	t1 := base
@@ -299,7 +277,7 @@ func TestApplyPlanIntervalLifecycle(t *testing.T) {
 // until a perfectly healthy address is retired.
 func TestApplyPlanRefreshClearsMisses(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	must(t, s.ApplyPlan(ctx, tr.ID, Plan{Status: StatusOK,
@@ -316,7 +294,7 @@ func TestApplyPlanRefreshClearsMisses(t *testing.T) {
 
 func TestApplyPlanWritesChangeFeed(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	must(t, s.ApplyPlan(ctx, tr.ID, Plan{
@@ -358,7 +336,7 @@ func TestApplyPlanWritesChangeFeed(t *testing.T) {
 
 func TestApplyPlanStatusDetail(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	must(t, s.ApplyPlan(ctx, tr.ID, Plan{
@@ -389,7 +367,7 @@ func TestApplyPlanStatusDetail(t *testing.T) {
 
 func TestApplyPlanUpdatesTrackerStatus(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	must(t, s.ApplyPlan(ctx, tr.ID, Plan{Status: StatusServFail, StatusChanged: true}, base))
@@ -408,7 +386,7 @@ func TestApplyPlanUpdatesTrackerStatus(t *testing.T) {
 
 func TestApplyPlanRejectsUnknownAction(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	err := s.ApplyPlan(ctx, tr.ID, Plan{
@@ -426,15 +404,11 @@ func TestApplyPlanRejectsUnknownAction(t *testing.T) {
 
 func TestListTrackerViews(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	a := mustAdd(t, s, "a.example.com")
 	mustAdd(t, s, "b.example.com")
 
-	must(t, s.ApplyPlan(ctx, a.ID, Plan{Status: StatusOK, Actions: []Action{
-		{IP: "1.2.3.4", Family: 4, Kind: ActionAdd},
-		{IP: "5.6.7.8", Family: 4, Kind: ActionAdd},
-		{IP: "2001:db8::1", Family: 6, Kind: ActionAdd},
-	}}, base))
+	apply(t, s, a.ID, base, adds("1.2.3.4", "5.6.7.8", "2001:db8::1")...)
 
 	views, err := s.ListTrackerViews(ctx, false)
 	if err != nil {
@@ -455,9 +429,8 @@ func TestListTrackerViews(t *testing.T) {
 	}
 
 	// A retired address drops out of the view.
-	must(t, s.ApplyPlan(ctx, a.ID, Plan{Status: StatusOK, Actions: []Action{
-		{IP: "1.2.3.4", Family: 4, Kind: ActionRemove},
-	}}, base.Add(time.Hour)))
+	apply(t, s, a.ID, base.Add(time.Hour),
+		Action{IP: "1.2.3.4", Family: 4, Kind: ActionRemove})
 	views, _ = s.ListTrackerViews(ctx, false)
 	if len(views[0].IPv4) != 1 || views[0].IPv4[0] != "5.6.7.8" {
 		t.Errorf("ipv4 = %v, want only 5.6.7.8", views[0].IPv4)
@@ -466,7 +439,7 @@ func TestListTrackerViews(t *testing.T) {
 
 func TestRecentChangesSinceAndLimit(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	for i := 0; i < 5; i++ {
@@ -505,7 +478,7 @@ func TestRecentChangesSinceAndLimit(t *testing.T) {
 
 func TestRuns(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, err := s.StartRun(ctx, base, 10)
 	if err != nil {
@@ -528,20 +501,16 @@ func TestRuns(t *testing.T) {
 
 func TestStats(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	a := mustAdd(t, s, "a.example.com")
 	b := mustAdd(t, s, "b.example.com")
 	mustAdd(t, s, "c.example.com")
 
-	must(t, s.ApplyPlan(ctx, a.ID, Plan{Status: StatusOK, StatusChanged: true, Actions: []Action{
-		{IP: "1.2.3.4", Family: 4, Kind: ActionAdd},
-		{IP: "5.6.7.8", Family: 4, Kind: ActionAdd},
-	}}, base))
+	apply(t, s, a.ID, base, adds("1.2.3.4", "5.6.7.8")...)
 	must(t, s.ApplyPlan(ctx, b.ID, Plan{Status: StatusNXDomain, StatusChanged: true}, base))
 	// Retire one address so active and total diverge.
-	must(t, s.ApplyPlan(ctx, a.ID, Plan{Status: StatusOK, Actions: []Action{
-		{IP: "1.2.3.4", Family: 4, Kind: ActionRemove},
-	}}, base.Add(time.Hour)))
+	apply(t, s, a.ID, base.Add(time.Hour),
+		Action{IP: "1.2.3.4", Family: 4, Kind: ActionRemove})
 
 	st, err := s.Stats(ctx)
 	if err != nil {
@@ -594,31 +563,12 @@ func TestPlanChanges(t *testing.T) {
 	}
 }
 
-func must(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func activeOne(t *testing.T, s *Store, trackerID int64) IPRecord {
-	t.Helper()
-	got, err := s.ActiveRecords(context.Background(), trackerID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("got %d active records, want 1: %+v", len(got), got)
-	}
-	return got[0]
-}
-
 // Concurrent writers must not fail with SQLITE_BUSY. Each of these
 // transactions reads before it writes, which is exactly the pattern that
 // deadlocks on lock upgrade unless transactions begin as immediate.
 func TestConcurrentWritersDoNotDeadlock(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := t.Context()
 	tr := mustAdd(t, s, "a.example.com")
 
 	// Give every address an initial row so PutIPInfo takes its read-then-write
@@ -626,14 +576,8 @@ func TestConcurrentWritersDoNotDeadlock(t *testing.T) {
 	ips := make([]string, 24)
 	for i := range ips {
 		ips[i] = fmt.Sprintf("192.0.2.%d", i+1)
-		if err := s.ApplyPlan(ctx, tr.ID, Plan{Status: StatusOK, Actions: []Action{
-			{IP: ips[i], Family: 4, Kind: ActionAdd},
-		}}, base); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.PutIPInfo(ctx, IPInfo{IP: ips[i], Family: 4, ASN: 64500}, base); err != nil {
-			t.Fatal(err)
-		}
+		apply(t, s, tr.ID, base, adds(ips[i])...)
+		must(t, s.PutIPInfo(ctx, IPInfo{IP: ips[i], Family: 4, ASN: 64500}, base))
 	}
 
 	var (

@@ -5,25 +5,6 @@ import (
 	"time"
 )
 
-// verdict is one probe result whose Since can predate the pass that recorded
-// it, which is how a verdict that has stood for a while looks on disk.
-func verdict(endpointID int64, ip string, result ProbeResult, since, checked time.Time) Probe {
-	return Probe{
-		EndpointID: endpointID, IP: ip, Family: Family(ip),
-		Result: result, Since: since, CheckedAt: checked,
-	}
-}
-
-// probeRun records one probing pass over an endpoint. Whatever a verdict
-// replaces is archived, so successive calls with a moving Since build the same
-// closed intervals a real pass would leave behind.
-func probeRun(t *testing.T, s *Store, endpointID int64, at time.Time, probes ...Probe) {
-	t.Helper()
-	if err := s.PutProbes(t.Context(), []int64{endpointID}, probes, at); err != nil {
-		t.Fatalf("PutProbes: %v", err)
-	}
-}
-
 func TestMergeAndCover(t *testing.T) {
 	h := func(n int) time.Time { return base.Add(time.Duration(n) * time.Hour) }
 	tests := []struct {
@@ -60,8 +41,8 @@ func TestAvailabilityOverUnionsAddresses(t *testing.T) {
 	// of them to work, not both, so this is a full day of uptime rather than
 	// the half an average over the two lanes would report.
 	probeRun(t, s, endpointID, base,
-		verdict(endpointID, "1.2.3.4", ProbeLive, base, base),
-		verdict(endpointID, "1.2.3.5", ProbeDead, base, base))
+		verdict("1.2.3.4", ProbeLive, base),
+		verdict("1.2.3.5", ProbeDead, base))
 
 	win, err := s.AvailabilityOver(t.Context(), base.Add(-time.Hour), end)
 	if err != nil {
@@ -84,8 +65,8 @@ func TestAvailabilityOverAbstainsFromUnknown(t *testing.T) {
 	// Twelve hours answering, then twelve nobody could measure. The unmeasured
 	// half must not read as downtime: the same abstention rule that keeps a
 	// failed probe from retiring a tracker.
-	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
-	probeRun(t, s, endpointID, half, verdict(endpointID, "1.2.3.4", ProbeUnknown, half, half))
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeLive, base))
+	probeRun(t, s, endpointID, half, verdict("1.2.3.4", ProbeUnknown, half))
 
 	win, err := s.AvailabilityOver(t.Context(), base, base.Add(24*time.Hour))
 	if err != nil {
@@ -126,8 +107,8 @@ func TestAvailabilityOverClipsToWindow(t *testing.T) {
 	// Up for a day and a half, then down for the last twelve hours. Only what
 	// the 24-hour window covers counts, so the long healthy stretch before it
 	// cannot prop up the score.
-	probeRun(t, s, endpointID, old, verdict(endpointID, "1.2.3.4", ProbeLive, old, old))
-	probeRun(t, s, endpointID, went, verdict(endpointID, "1.2.3.4", ProbeDead, went, went))
+	probeRun(t, s, endpointID, old, verdict("1.2.3.4", ProbeLive, old))
+	probeRun(t, s, endpointID, went, verdict("1.2.3.4", ProbeDead, went))
 
 	win, err := s.AvailabilityOver(t.Context(), base.Add(-24*time.Hour), base)
 	if err != nil {
@@ -162,8 +143,8 @@ func TestAvailabilityOverSeparatesEndpoints(t *testing.T) {
 
 	// udp:6969 answers and https:443 does not. The name is up either way, but
 	// the per-scheme lists need the endpoints kept apart.
-	probeRun(t, s, udpID, base, verdict(udpID, "1.2.3.4", ProbeLive, base, base))
-	probeRun(t, s, httpsID, base, verdict(httpsID, "1.2.3.4", ProbeDead, base, base))
+	probeRun(t, s, udpID, base, verdict("1.2.3.4", ProbeLive, base))
+	probeRun(t, s, httpsID, base, verdict("1.2.3.4", ProbeDead, base))
 
 	win, err := s.AvailabilityOver(ctx, base, base.Add(24*time.Hour))
 	if err != nil {
@@ -189,7 +170,7 @@ func TestAvailabilityOverSkipsDisabledAndControl(t *testing.T) {
 	canaryID, canaryEndpoint := newTrackerWithEndpoint(t, s, "canary.example.com")
 
 	for _, e := range []int64{liveEndpoint, goneEndpoint, canaryEndpoint} {
-		probeRun(t, s, e, base, verdict(e, "1.2.3.4", ProbeLive, base, base))
+		probeRun(t, s, e, base, verdict("1.2.3.4", ProbeLive, base))
 	}
 	// Removing keeps the history, so only the query's filter stands between a
 	// disabled name and a list a client would paste.
@@ -218,7 +199,7 @@ func TestAvailabilityOverSkipsDisabledAndControl(t *testing.T) {
 func TestAvailabilityOverEmptyWindow(t *testing.T) {
 	s := testStore(t)
 	_, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
-	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeLive, base))
 
 	// A window that ends before it starts divides by nothing rather than
 	// panicking or reporting the whole history.
@@ -241,11 +222,11 @@ func TestAvailabilityOverDatesTheCurrentStretch(t *testing.T) {
 	// to the first address — which is what the earliest live probe's own Since
 	// would get wrong, reporting five hours instead of ten.
 	probeRun(t, s, endpointID, base,
-		verdict(endpointID, "1.2.3.4", ProbeLive, base, base),
-		verdict(endpointID, "1.2.3.5", ProbeDead, base, base))
+		verdict("1.2.3.4", ProbeLive, base),
+		verdict("1.2.3.5", ProbeDead, base))
 	probeRun(t, s, endpointID, swap,
-		verdict(endpointID, "1.2.3.4", ProbeDead, swap, swap),
-		verdict(endpointID, "1.2.3.5", ProbeLive, swap, swap))
+		verdict("1.2.3.4", ProbeDead, swap),
+		verdict("1.2.3.5", ProbeLive, swap))
 
 	got, err := s.AvailabilityOver(t.Context(), base.Add(-time.Hour), end)
 	if err != nil {
@@ -268,8 +249,8 @@ func TestAvailabilityOverDatesSilence(t *testing.T) {
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 	went, end := base.Add(6*time.Hour), base.Add(10*time.Hour)
 
-	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
-	probeRun(t, s, endpointID, went, verdict(endpointID, "1.2.3.4", ProbeDead, went, went))
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeLive, base))
+	probeRun(t, s, endpointID, went, verdict("1.2.3.4", ProbeDead, went))
 
 	got, err := s.AvailabilityOver(t.Context(), base.Add(-time.Hour), end)
 	if err != nil {
@@ -287,7 +268,7 @@ func TestAvailabilityOverMarksAStretchOlderThanTheWindow(t *testing.T) {
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 	old, end := base.Add(-48*time.Hour), base
 
-	probeRun(t, s, endpointID, old, verdict(endpointID, "1.2.3.4", ProbeLive, old, old))
+	probeRun(t, s, endpointID, old, verdict("1.2.3.4", ProbeLive, old))
 
 	got, err := s.AvailabilityOver(t.Context(), base.Add(-24*time.Hour), end)
 	if err != nil {
@@ -307,7 +288,7 @@ func TestAvailabilityOverHasNoStretchOnceProbingStops(t *testing.T) {
 	trackerID, endpointID := newTrackerWithEndpoint(t, s, "tracker.example.com")
 	stopped, end := base.Add(4*time.Hour), base.Add(10*time.Hour)
 
-	probeRun(t, s, endpointID, base, verdict(endpointID, "1.2.3.4", ProbeLive, base, base))
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeLive, base))
 	// The addresses went away, or the host asked not to be probed. Either way
 	// the last verdict describes the past.
 	if err := s.ClearProbes(t.Context(), trackerID, stopped); err != nil {

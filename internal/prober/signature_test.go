@@ -1,12 +1,10 @@
 package prober
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 // The bodies below are verbatim replies from public trackers. They are the
@@ -88,10 +86,7 @@ func TestSignatureSurvivesTheReadLimit(t *testing.T) {
 		w.Write([]byte(body.String()))
 	})
 
-	p := &Prober{Timeout: 5 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q (%s), want live", got.State, got.Reason)
 	}
@@ -141,10 +136,7 @@ func TestProbeCapturesSignatureAndServer(t *testing.T) {
 		w.Write([]byte("d14:failure reason31:no info_hash parameter suppliede"))
 	})
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{
-		Host: "t.example.com", IP: ip, Scheme: "http", Port: port, Path: "/announce",
-	})
+	got := probe(t, "http", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q, want live", got.State)
 	}
@@ -161,8 +153,7 @@ func TestProbeCapturesSignatureAndServer(t *testing.T) {
 func TestProbeUDPHasNoSignature(t *testing.T) {
 	ip, port := udpTracker(t, connectReply)
 
-	p := &Prober{Timeout: 2 * time.Second}
-	got := p.Probe(context.Background(), Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
+	got := probe(t, "udp", ip, port)
 	if got.State != Live {
 		t.Fatalf("state = %q, want live", got.State)
 	}

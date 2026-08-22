@@ -264,7 +264,8 @@ func (z testZone) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 	}
 }
 
-func newTestResolver(t *testing.T) *DNS {
+// testServer starts a local resolver serving testZone and returns its address.
+func testServer(t *testing.T) string {
 	t.Helper()
 	cancel, addr, err := dnstest.UDPServer(":0", func(s *dns.Server) {
 		s.Handler = testZone{t: t}
@@ -273,8 +274,12 @@ func newTestResolver(t *testing.T) *DNS {
 		t.Fatalf("start test DNS server: %v", err)
 	}
 	t.Cleanup(cancel)
+	return addr
+}
 
-	d, err := New([]string{addr}, 3*time.Second, 0)
+func newTestResolver(t *testing.T) *DNS {
+	t.Helper()
+	d, err := New([]string{testServer(t)}, 3*time.Second, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,15 +350,7 @@ func TestLookupUnreachableServer(t *testing.T) {
 
 // A dead server must not stop a healthy one further down the list.
 func TestLookupFallsThroughToWorkingServer(t *testing.T) {
-	cancel, addr, err := dnstest.UDPServer(":0", func(s *dns.Server) {
-		s.Handler = testZone{t: t}
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-
-	d, err := New([]string{"127.0.0.1:1", addr}, 250*time.Millisecond, 0)
+	d, err := New([]string{"127.0.0.1:1", testServer(t)}, 250*time.Millisecond, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

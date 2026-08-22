@@ -7,7 +7,7 @@ import (
 )
 
 // Version is the release of torrent-tracker.
-const Version = "1.0.0"
+const Version = "1.0.1"
 
 // DNSLib returns the version of the miekg/dns module this binary was built
 // with, or "" when the build information is unavailable (as with `go run`).

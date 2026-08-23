@@ -21,6 +21,9 @@ type Availability struct {
 	// Clipped marks a stretch running back to the start of the window, which
 	// began at least that long ago rather than exactly then.
 	Clipped bool
+	// Misses is the failed attempts the intervals in the window survived. A
+	// share of 1.0 with misses is a flapping name, not a healthy one.
+	Misses int
 }
 
 // Share is the fraction of measured time spent answering.
@@ -57,10 +60,14 @@ func (iv interval) clip(w interval) (interval, bool) {
 }
 
 // spans collects the intervals behind one uptime figure, overlaps included.
-type spans struct{ measured, live []interval }
+type spans struct {
+	measured, live []interval
+	misses         int
+}
 
-func (sp *spans) add(iv interval, live bool) {
+func (sp *spans) add(iv interval, live bool, misses int) {
 	sp.measured = append(sp.measured, iv)
+	sp.misses += misses
 	if live {
 		sp.live = append(sp.live, iv)
 	}
@@ -68,7 +75,7 @@ func (sp *spans) add(iv interval, live bool) {
 
 func (sp *spans) availability(window interval) Availability {
 	live, measured := merge(sp.live), merge(sp.measured)
-	a := Availability{Live: cover(live), Measured: cover(measured)}
+	a := Availability{Live: cover(live), Measured: cover(measured), Misses: sp.misses}
 	if len(measured) == 0 {
 		return a
 	}
@@ -150,13 +157,13 @@ func (s *Store) AvailabilityOver(ctx context.Context, from, until time.Time) (Av
 	// probe_history holds the closed intervals and probes the open one, so the
 	// two together cover the axis. Unknown verdicts stay out entirely.
 	err := s.eachRow(ctx, `
-		SELECT e.tracker_id, h.endpoint_id, h.result, h.since, h.until
+		SELECT e.tracker_id, h.endpoint_id, h.result, h.misses, h.since, h.until
 		FROM probe_history h
 		JOIN endpoints e ON e.id = h.endpoint_id
 		JOIN trackers t ON t.id = e.tracker_id
 		WHERE t.enabled = 1 AND t.control = 0 AND h.result != ? AND h.until > ?
 		UNION ALL
-		SELECT e.tracker_id, p.endpoint_id, p.result, p.since, ?
+		SELECT e.tracker_id, p.endpoint_id, p.result, p.misses, p.since, ?
 		FROM probes p
 		JOIN endpoints e ON e.id = p.endpoint_id
 		JOIN trackers t ON t.id = e.tracker_id
@@ -165,9 +172,10 @@ func (s *Store) AvailabilityOver(ctx context.Context, from, until time.Time) (Av
 			var (
 				trackerID, endpointID int64
 				result                ProbeResult
+				misses                int
 				since, ends           string
 			)
-			if err := sc.Scan(&trackerID, &endpointID, &result, &since, &ends); err != nil {
+			if err := sc.Scan(&trackerID, &endpointID, &result, &misses, &since, &ends); err != nil {
 				return err
 			}
 			start, err := parseTime(since)
@@ -182,9 +190,11 @@ func (s *Store) AvailabilityOver(ctx context.Context, from, until time.Time) (Av
 			if !ok {
 				return nil
 			}
+			// Misses count whole, even where the window clipped the interval:
+			// what is being reported is that the stretch was not clean.
 			live := result == ProbeLive
-			spansFor(trackers, trackerID).add(iv, live)
-			spansFor(endpoints, endpointID).add(iv, live)
+			spansFor(trackers, trackerID).add(iv, live, misses)
+			spansFor(endpoints, endpointID).add(iv, live, misses)
 			return nil
 		})
 	if err != nil {

@@ -82,11 +82,16 @@
     return lanes.reduce((n, l) => n + l.live, 0) / measured
   })
 
+  // Attempts that failed without breaking a verdict. A stretch reading live
+  // throughout is not proof that every round inside it answered.
+  const misses = $derived(lanes.reduce((n, l) => n + l.misses, 0))
+
   function segTitle(what, seg) {
     const to = seg.open ? 'now' : fmtTime(new Date(seg.to).toISOString())
     const why = seg.reason ? ` (${seg.reason})` : ''
     const n = seg.lookups ? `\n${seg.lookups} lookup${seg.lookups === 1 ? '' : 's'}` : ''
-    return `${what}: ${seg.result}${why}\n${fmtTime(new Date(seg.from).toISOString())} → ${to}${n}`
+    const m = seg.misses ? `\n${seg.misses} failed attempt${seg.misses === 1 ? '' : 's'}` : ''
+    return `${what}: ${seg.result}${why}\n${fmtTime(new Date(seg.from).toISOString())} → ${to}${n}${m}`
   }
 </script>
 
@@ -218,6 +223,12 @@
         <span class="pill {uptime > 0.99 ? 'live' : uptime > 0.5 ? 'partial' : 'dead'}"
               title="share of measured time this name answered on any address">
           {fmtPercent(uptime)} answering
+        </span>
+      {/if}
+      {#if misses > 0}
+        <span class="pill partial"
+              title="probes that failed inside those stretches, so the share above is not the whole story">
+          {misses} failed {misses === 1 ? 'attempt' : 'attempts'}
         </span>
       {/if}
       <div class="window-pick">

@@ -60,8 +60,11 @@ type Probe struct {
 	Reason     string      `json:"reason,omitempty"`
 	RTTms      int         `json:"rtt_ms,omitempty"`
 	MissCount  int         `json:"-"`
-	Since      time.Time   `json:"since"`
-	CheckedAt  time.Time   `json:"checked_at"`
+	// Misses is the failed attempts since Since; MissCount is the streak that
+	// decides the verdict.
+	Misses    int       `json:"misses,omitempty"`
+	Since     time.Time `json:"since"`
+	CheckedAt time.Time `json:"checked_at"`
 	// Signature fingerprints the tracker software, Kind says what sort of
 	// evidence it is, Server names the front end. HTTP only: BEP 15 carries none
 	// of them.
@@ -152,7 +155,7 @@ func scanProbe(sc scanner) (Probe, error) {
 		since, checked string
 	)
 	if err := sc.Scan(&p.EndpointID, &p.IP, &p.Family, &p.Result, &p.Reason,
-		&p.RTTms, &p.MissCount, &since, &checked, &p.Signature, &p.Kind,
+		&p.RTTms, &p.MissCount, &p.Misses, &since, &checked, &p.Signature, &p.Kind,
 		&p.Server); err != nil {
 		return p, err
 	}
@@ -168,7 +171,8 @@ func scanProbe(sc scanner) (Probe, error) {
 func (s *Store) ProbesFor(ctx context.Context, trackerID int64) ([]Probe, error) {
 	return queryAll(ctx, s, scanProbe, `
 		SELECT p.endpoint_id, p.ip, p.family, p.result, p.reason, p.rtt_ms,
-		       p.miss_count, p.since, p.checked_at, p.signature, p.signature_kind, p.server
+		       p.miss_count, p.misses, p.since, p.checked_at, p.signature,
+		       p.signature_kind, p.server
 		FROM probes p JOIN endpoints e ON e.id = p.endpoint_id
 		WHERE e.tracker_id = ?
 		ORDER BY e.scheme, e.port, p.family, p.ip`, trackerID)
@@ -200,15 +204,16 @@ func (s *Store) PutProbes(ctx context.Context, endpointIDs []int64, probes []Pro
 
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO probes (endpoint_id, ip, family, result, reason, rtt_ms, miss_count,
-			                    since, checked_at, signature, signature_kind, server)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			                    misses, since, checked_at, signature, signature_kind, server)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (endpoint_id, ip) DO UPDATE SET
 				result = excluded.result, reason = excluded.reason, rtt_ms = excluded.rtt_ms,
-				miss_count = excluded.miss_count, since = excluded.since, checked_at = excluded.checked_at,
+				miss_count = excluded.miss_count, misses = excluded.misses,
+				since = excluded.since, checked_at = excluded.checked_at,
 				signature = excluded.signature, signature_kind = excluded.signature_kind,
 				server = excluded.server`,
 			p.EndpointID, p.IP, p.Family, p.Result, p.Reason, p.RTTms, p.MissCount,
-			fmtTime(p.Since), fmtTime(p.CheckedAt), p.Signature, p.Kind, p.Server); err != nil {
+			p.Misses, fmtTime(p.Since), fmtTime(p.CheckedAt), p.Signature, p.Kind, p.Server); err != nil {
 			return fmt.Errorf("store probe %d/%s: %w", p.EndpointID, p.IP, err)
 		}
 	}
@@ -261,21 +266,24 @@ type ProbeInterval struct {
 	Family     int         `json:"family"`
 	Result     ProbeResult `json:"result"`
 	Reason     string      `json:"reason,omitempty"`
-	Since      time.Time   `json:"since"`
-	Until      time.Time   `json:"until"`
+	// Misses is the failed attempts the interval survived.
+	Misses int       `json:"misses,omitempty"`
+	Since  time.Time `json:"since"`
+	Until  time.Time `json:"until"`
 }
 
 // archiveProbe copies the stored interval for one address into probe_history.
 // A verdict that has not moved, or a first probe, has nothing to close.
 func archiveProbe(ctx context.Context, tx *sql.Tx, endpointID int64, ip string, until time.Time) error {
 	var (
-		family         int
+		family, misses int
 		result, reason string
 		since          string
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT family, result, reason, since FROM probes
-		WHERE endpoint_id = ? AND ip = ?`, endpointID, ip).Scan(&family, &result, &reason, &since)
+		SELECT family, result, reason, misses, since FROM probes
+		WHERE endpoint_id = ? AND ip = ?`, endpointID, ip).
+		Scan(&family, &result, &reason, &misses, &since)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -290,9 +298,9 @@ func archiveProbe(ctx context.Context, tx *sql.Tx, endpointID int64, ip string, 
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO probe_history (endpoint_id, ip, family, result, reason, since, until)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		endpointID, ip, family, result, reason, since, fmtTime(until)); err != nil {
+		INSERT INTO probe_history (endpoint_id, ip, family, result, reason, misses, since, until)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		endpointID, ip, family, result, reason, misses, since, fmtTime(until)); err != nil {
 		return fmt.Errorf("archive probe %d/%s: %w", endpointID, ip, err)
 	}
 	return nil
@@ -304,7 +312,7 @@ func scanProbeInterval(sc scanner) (ProbeInterval, error) {
 		start, until string
 	)
 	if err := sc.Scan(&iv.EndpointID, &iv.IP, &iv.Family, &iv.Result, &iv.Reason,
-		&start, &until); err != nil {
+		&iv.Misses, &start, &until); err != nil {
 		return iv, err
 	}
 	var err error
@@ -319,7 +327,7 @@ func scanProbeInterval(sc scanner) (ProbeInterval, error) {
 // starting at since, oldest first. Open intervals live in probes.
 func (s *Store) ProbeHistoryFor(ctx context.Context, trackerID int64, since time.Time) ([]ProbeInterval, error) {
 	return queryAll(ctx, s, scanProbeInterval, `
-		SELECT h.endpoint_id, h.ip, h.family, h.result, h.reason, h.since, h.until
+		SELECT h.endpoint_id, h.ip, h.family, h.result, h.reason, h.misses, h.since, h.until
 		FROM probe_history h JOIN endpoints e ON e.id = h.endpoint_id
 		WHERE e.tracker_id = ? AND h.until >= ?
 		ORDER BY h.endpoint_id, h.ip, h.id`, trackerID, fmtTime(since))

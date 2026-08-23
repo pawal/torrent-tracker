@@ -270,9 +270,10 @@ func (p *Prober) addresses(ctx context.Context, t store.ProbeTarget) []string {
 	return addrs
 }
 
-// merge folds a fresh attempt into the stored verdict. One failure is not
-// death: the threshold mirrors the rule that keeps a single absent A record
-// from retiring an address.
+// merge folds a fresh attempt into the stored verdict. One failure the network
+// could explain is not death: the threshold mirrors the rule that keeps a
+// single absent A record from retiring an address. A reply that is not a
+// tracker gets no such grace: it is an answer, not a lost packet.
 func merge(job probeJob, res prober.Result, before store.Probe, seen bool,
 	now time.Time, threshold int,
 ) store.Probe {
@@ -307,8 +308,9 @@ func merge(job probeJob, res prober.Result, before store.Probe, seen bool,
 			out.Result = before.Result
 			out.MissCount = before.MissCount
 		}
-	default:
+	default: // dead or unreachable: the attempt failed either way
 		out.Reason = res.Reason
+		out.Misses = 1
 		// A first sighting starts from the endpoint's streak rather than at 1,
 		// or a churning name resets its way out of every verdict.
 		out.MissCount = job.streak + 1
@@ -316,7 +318,9 @@ func merge(job probeJob, res prober.Result, before store.Probe, seen bool,
 			out.MissCount = before.MissCount + 1
 		}
 		switch {
-		case out.MissCount >= threshold:
+		// An answer that is not a tracker settles it: only a failure the
+		// network could explain gets the grace a lost packet deserves.
+		case res.State == prober.Dead, out.MissCount >= threshold:
 			out.Result = store.ProbeDead
 		case seen && before.Result == store.ProbeLive:
 			// Believed live until it misses again.
@@ -328,6 +332,7 @@ func merge(job probeJob, res prober.Result, before store.Probe, seen bool,
 
 	if seen && before.Result == out.Result {
 		out.Since = before.Since
+		out.Misses += before.Misses
 	}
 	return out
 }

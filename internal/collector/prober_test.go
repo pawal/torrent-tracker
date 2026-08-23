@@ -44,11 +44,17 @@ func (f *fakeChecker) Probe(_ context.Context, t prober.Target) prober.Result {
 	if r, ok := f.results[key]; ok {
 		return r
 	}
-	return prober.Result{State: prober.Dead, Reason: "timed out"}
+	return prober.Result{State: prober.Unreachable, Reason: "timed out"}
 }
 
 func live() prober.Result {
 	return prober.Result{State: prober.Live, RTT: 12 * time.Millisecond}
+}
+
+// notATracker is a server answering cleanly with something that is not a
+// tracker reply, as opposed to the silence the fake defaults to.
+func notATracker() prober.Result {
+	return prober.Result{State: prober.Dead, Reason: "HTTP 400, HTML not a tracker reply"}
 }
 
 // probeFixture builds a tracker with the given endpoints and active addresses,
@@ -304,6 +310,66 @@ func TestProberChurnKeepsAnsweringEndpointPartial(t *testing.T) {
 		if got := f.reach(t); got != store.ReachPartial {
 			t.Fatalf("reach = %q, want partial: one address still answers", got)
 		}
+	}
+}
+
+// The 004430.xyz shape: an endpoint answering every other round with a clean
+// HTTP 400 read live for six days at uptime 1.0, because the grace path
+// treated a reply as though it were a dropped packet.
+func TestProberNotATrackerReplyBreaksUptime(t *testing.T) {
+	f := newProbeFixture(t, "004430.xyz", []string{"1.2.3.4"}, endpoint{"https", 443})
+	from := f.now.Add(-time.Hour)
+
+	for i := range 6 {
+		f.checker.results["https:443 1.2.3.4"] = live()
+		if i%2 == 1 {
+			f.checker.results["https:443 1.2.3.4"] = notATracker()
+		}
+		f.run(t)
+		f.now = f.now.Add(6 * time.Hour)
+	}
+
+	win, err := f.store.AvailabilityOver(context.Background(), from, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := win.Trackers[f.tracker.ID]
+	if !a.Known() {
+		t.Fatal("nothing measured over the window")
+	}
+	if a.Share() >= 1 {
+		t.Errorf("uptime = %.2f over rounds that half failed, want less than 1", a.Share())
+	}
+	if a.Misses < 3 {
+		t.Errorf("misses = %d, want the three failed rounds counted", a.Misses)
+	}
+}
+
+// The other half of the split: a timeout may be the network, so it keeps its
+// grace. The attempt is still counted, or a live interval that failed half the
+// time reads exactly like a clean one.
+func TestProberGracedFailureIsStillCounted(t *testing.T) {
+	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"},
+		endpoint{"udp", 6969})
+	f.checker.results["udp:6969 1.2.3.4"] = live()
+	f.run(t)
+
+	delete(f.checker.results, "udp:6969 1.2.3.4") // silence, not an answer
+	f.now = f.now.Add(time.Hour)
+	f.run(t)
+
+	probes, err := f.store.ProbesFor(context.Background(), f.tracker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probes[0].Result != store.ProbeLive {
+		t.Fatalf("result = %q, want live: one timeout is not proof", probes[0].Result)
+	}
+	if probes[0].Misses != 1 {
+		t.Errorf("misses = %d, want the graced round counted", probes[0].Misses)
+	}
+	if !probes[0].Since.Before(probes[0].CheckedAt) {
+		t.Error("the live interval should have held across the miss")
 	}
 }
 

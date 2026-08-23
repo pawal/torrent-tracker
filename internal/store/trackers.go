@@ -204,6 +204,9 @@ type TrackerView struct {
 	// Uptime is the share of measured time the tracker answered over the
 	// window, null when nothing was measured.
 	Uptime *float64 `json:"uptime"`
+	// Misses is the failed attempts behind that uptime: 100% with misses is a
+	// flapping name the intervals alone cannot show.
+	Misses int `json:"misses,omitempty"`
 	// State is how long the present reachability has held, null when nothing is
 	// being measured now.
 	State *TrackerState `json:"state"`

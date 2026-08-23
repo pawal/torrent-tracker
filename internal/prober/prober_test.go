@@ -59,8 +59,9 @@ func TestProbeUDPSilence(t *testing.T) {
 
 	got := (&Prober{Timeout: 300 * time.Millisecond}).Probe(t.Context(),
 		Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
-	if got.State != Dead {
-		t.Errorf("state = %q, want dead", got.State)
+	// Silence is not a verdict: the datagram may simply be lost.
+	if got.State != Unreachable {
+		t.Errorf("state = %q, want unreachable", got.State)
 	}
 	if got.Reason != "timed out" {
 		t.Errorf("reason = %q, want %q", got.Reason, "timed out")
@@ -100,8 +101,8 @@ func TestProbeUDPRetransmissionStaysWithinTheTimeout(t *testing.T) {
 		Target{Host: "t.example.com", IP: ip, Scheme: "udp", Port: port})
 	elapsed := time.Since(start)
 
-	if got.State != Dead {
-		t.Errorf("state = %q, want dead", got.State)
+	if got.State != Unreachable {
+		t.Errorf("state = %q, want unreachable", got.State)
 	}
 	// Generous headroom: this asserts the budget is shared rather than doubled,
 	// not that the scheduler is prompt.
@@ -359,6 +360,17 @@ func TestProbeHTTPParkingPage(t *testing.T) {
 	}
 	if !strings.Contains(got.Reason, "HTML") {
 		t.Errorf("reason = %q, want it to name the HTML body", got.Reason)
+	}
+}
+
+// Nothing listening is not the same evidence as a reply that was not a
+// tracker: the port may be firewalled, so this failure keeps its grace.
+func TestProbeHTTPRefusedIsUnreachable(t *testing.T) {
+	srv, ip, port := httpTracker(t, func(http.ResponseWriter, *http.Request) {})
+	srv.Close()
+
+	if got := probe(t, "http", ip, port); got.State != Unreachable {
+		t.Errorf("state = %q, want unreachable", got.State)
 	}
 }
 

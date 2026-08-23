@@ -26,9 +26,12 @@ import (
 type State string
 
 const (
-	Live    State = "live"    // spoke the tracker protocol
-	Dead    State = "dead"    // reachable or not, but not a tracker
-	Unknown State = "unknown" // the probe could not be made
+	Live State = "live" // spoke the tracker protocol
+	Dead State = "dead" // answered, and not as a tracker
+	// Unreachable is a failure the network may be to blame for: a timeout, a
+	// refusal, a dial error. Nothing answered, so nothing was disproved.
+	Unreachable State = "unreachable"
+	Unknown     State = "unknown" // the probe could not be made
 )
 
 // Target is one endpoint on one address. Host is kept alongside IP because
@@ -142,7 +145,7 @@ func (p *Prober) udpConnect(ctx context.Context, t Target) (Result, bool) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "udp", addr)
 	if err != nil {
-		return Result{State: Dead, Reason: dialReason(err), RTT: time.Since(start)}, false
+		return Result{State: Unreachable, Reason: dialReason(err), RTT: time.Since(start)}, false
 	}
 	defer conn.Close()
 	if deadline, ok := ctx.Deadline(); ok {
@@ -155,7 +158,7 @@ func (p *Prober) udpConnect(ctx context.Context, t Target) (Result, bool) {
 	binary.BigEndian.PutUint32(req[8:12], actionConnect)
 	binary.BigEndian.PutUint32(req[12:16], txid)
 	if _, err := conn.Write(req); err != nil {
-		return Result{State: Dead, Reason: dialReason(err), RTT: time.Since(start)}, false
+		return Result{State: Unreachable, Reason: dialReason(err), RTT: time.Since(start)}, false
 	}
 
 	buf := make([]byte, 512)
@@ -163,7 +166,7 @@ func (p *Prober) udpConnect(ctx context.Context, t Target) (Result, bool) {
 	rtt := time.Since(start)
 	if err != nil {
 		// A refusal is an answer of sorts, and asking twice will not change it.
-		return Result{State: Dead, Reason: dialReason(err), RTT: rtt}, isTimeout(err) ||
+		return Result{State: Unreachable, Reason: dialReason(err), RTT: rtt}, isTimeout(err) ||
 			errors.Is(err, context.DeadlineExceeded)
 	}
 	if n < 16 {
@@ -270,7 +273,7 @@ func (p *Prober) request(ctx context.Context, client *http.Client, t Target, u s
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return probeResponse{Result: Result{State: Dead, Reason: dialReason(err), RTT: time.Since(start)}}
+		return probeResponse{Result: Result{State: Unreachable, Reason: dialReason(err), RTT: time.Since(start)}}
 	}
 	defer resp.Body.Close()
 

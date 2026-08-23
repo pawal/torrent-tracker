@@ -49,6 +49,7 @@ export function probeLanes(data, from, now) {
         segments: [],
         live: 0,
         measured: 0,
+        misses: 0,
         result: '',
       }
       lanes.set(key, lane)
@@ -65,9 +66,13 @@ export function probeLanes(data, from, now) {
       lane.measured += b - a
       if (iv.result === 'live') lane.live += b - a
     }
+    // The failed attempts the interval survived: a live stretch is not proof
+    // that every round inside it answered.
+    lane.misses += iv.misses ?? 0
     lane.segments.push({
       result: iv.result,
       reason: iv.reason ?? '',
+      misses: iv.misses ?? 0,
       from: a,
       to: b,
       open,

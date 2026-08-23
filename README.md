@@ -136,7 +136,8 @@ name with one stale A record at `partial` instead of flapping.
   nothing, or a CDN answering `429`, records `unknown` and keeps the last real
   measurement.
 - **One silence is not death.** `--probe-miss-threshold` (default 2) failures
-  are needed before an endpoint is called dead.
+  are needed before an endpoint is called dead. Only for failures the network
+  could explain: a clean reply that is not a tracker ends the verdict at once.
 - **A silent UDP connect is retransmitted once**, inside the same
   `--probe-timeout` budget. An answer that merely is not a tracker reply is not
   retried.
@@ -463,6 +464,10 @@ response pastes straight into a client's tracker box.
 share of checks: probes are hours apart and irregular, so counting them makes two
 trackers on different schedules incomparable. Unknown verdicts abstain as they do
 in the rollup.
+
+**Failed attempts are counted alongside it.** A graced failure leaves the
+interval unbroken, so `misses` rides with every uptime figure. 100% with misses
+is a name that flaps.
 
 **Lanes are unioned rather than averaged.** A client needs one (endpoint,
 address) pair to work, so a name with four addresses of which one is stale is

@@ -166,6 +166,7 @@ func (s *Server) handleTrackers(w http.ResponseWriter, r *http.Request) {
 		}
 		share := a.Share()
 		views[i].Uptime = &share
+		views[i].Misses = a.Misses
 		if !a.Since.IsZero() {
 			views[i].State = &store.TrackerState{
 				Answering: a.Answering, Since: a.Since, Clipped: a.Clipped,

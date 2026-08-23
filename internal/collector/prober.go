@@ -156,6 +156,7 @@ func (p *Prober) probeOne(ctx context.Context, t store.ProbeTarget) (store.Reach
 	}
 
 	addrs := p.addresses(ctx, t)
+	streaks := endpointStreaks(previous)
 	now := p.now()
 	threshold := p.missThreshold()
 
@@ -169,6 +170,7 @@ func (p *Prober) probeOne(ctx context.Context, t store.ProbeTarget) (store.Reach
 				target: prober.Target{
 					Host: t.Tracker.Name, IP: ip, Scheme: ep.Scheme, Port: ep.Port, Path: ep.Path,
 				},
+				streak: streaks[ep.ID],
 			})
 		}
 	}
@@ -201,6 +203,30 @@ type probeKey struct {
 type probeJob struct {
 	key    probeKey
 	target prober.Target
+	// streak is the endpoint's consecutive-failure count, inherited by an
+	// address probed for the first time.
+	streak int
+}
+
+// endpointStreaks counts, per endpoint, the rounds it has failed on every
+// address probed, so a name whose addresses churn faster than the threshold
+// still accumulates: failing on ten addresses is ten failures.
+//
+// One answering address zeroes the streak, which is what keeps partial partial:
+// only an endpoint answering nowhere passes a streak on.
+func endpointStreaks(previous []store.Probe) map[int64]int {
+	streak := map[int64]int{}
+	answered := map[int64]bool{}
+	for _, p := range previous {
+		streak[p.EndpointID] = max(streak[p.EndpointID], p.MissCount)
+		if p.MissCount == 0 {
+			answered[p.EndpointID] = true
+		}
+	}
+	for id := range answered {
+		streak[id] = 0
+	}
+	return streak
 }
 
 // runJobs probes a tracker's endpoints and addresses a few at a time. Verdicts
@@ -212,7 +238,7 @@ func (p *Prober) runJobs(ctx context.Context, jobs []probeJob, prev map[probeKey
 	probes := pool(ctx, p.fanout(), jobs, func(job probeJob) store.Probe {
 		res := p.probe().Probe(ctx, job.target)
 		before, seen := prev[job.key]
-		return merge(job.key, job.key.ip, res, before, seen, now, threshold)
+		return merge(job, res, before, seen, now, threshold)
 	})
 
 	// A cancelled pass measured only part of the name, and rolling that up
@@ -247,11 +273,12 @@ func (p *Prober) addresses(ctx context.Context, t store.ProbeTarget) []string {
 // merge folds a fresh attempt into the stored verdict. One failure is not
 // death: the threshold mirrors the rule that keeps a single absent A record
 // from retiring an address.
-func merge(key probeKey, ip string, res prober.Result, before store.Probe, seen bool,
+func merge(job probeJob, res prober.Result, before store.Probe, seen bool,
 	now time.Time, threshold int,
 ) store.Probe {
+	ip := job.key.ip
 	out := store.Probe{
-		EndpointID: key.endpointID,
+		EndpointID: job.key.endpointID,
 		IP:         ip,
 		Family:     store.Family(ip),
 		RTTms:      int(res.RTT.Milliseconds()),
@@ -275,13 +302,16 @@ func merge(key probeKey, ip string, res prober.Result, before store.Probe, seen 
 		// tell us. CheckedAt still moves, so the verdict visibly ages.
 		out.Result = store.ProbeUnknown
 		out.Reason = res.Reason
+		out.MissCount = job.streak
 		if seen {
 			out.Result = before.Result
 			out.MissCount = before.MissCount
 		}
 	default:
 		out.Reason = res.Reason
-		out.MissCount = 1
+		// A first sighting starts from the endpoint's streak rather than at 1,
+		// or a churning name resets its way out of every verdict.
+		out.MissCount = job.streak + 1
 		if seen {
 			out.MissCount = before.MissCount + 1
 		}

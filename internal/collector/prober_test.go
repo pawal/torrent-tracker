@@ -59,6 +59,7 @@ type probeFixture struct {
 	checker *fakeChecker
 	prober  *Prober
 	now     time.Time
+	addrs   []string
 }
 
 // endpoint is one announce endpoint a fixture should offer.
@@ -81,7 +82,7 @@ func newProbeFixture(t *testing.T, name string, addrs []string, endpoints ...end
 	resolvesTo(t, st, tr.ID, now, addrs...)
 
 	checker := &fakeChecker{results: map[string]prober.Result{}}
-	f := &probeFixture{store: st, tracker: tr, checker: checker, now: now}
+	f := &probeFixture{store: st, tracker: tr, checker: checker, now: now, addrs: addrs}
 	f.prober = &Prober{
 		Store:         st,
 		Probe:         checker,
@@ -99,6 +100,34 @@ func (f *probeFixture) run(t *testing.T) ProbeSummary {
 		t.Fatal(err)
 	}
 	return sum
+}
+
+// resolvesTo swaps the tracker's addresses for a new set, the way a CDN handing
+// out a fresh pool looks to a collection pass. Addresses in both sets stay.
+func (f *probeFixture) resolvesTo(t *testing.T, addrs ...string) {
+	t.Helper()
+	fresh := map[string]bool{}
+	for _, ip := range addrs {
+		fresh[ip] = true
+	}
+	var actions []store.Action
+	for _, ip := range f.addrs {
+		if !fresh[ip] {
+			actions = append(actions, store.Action{IP: ip, Family: store.Family(ip), Kind: store.ActionRemove})
+		}
+		delete(fresh, ip)
+	}
+	for _, ip := range addrs {
+		if fresh[ip] {
+			actions = append(actions, store.Action{IP: ip, Family: store.Family(ip), Kind: store.ActionAdd})
+		}
+	}
+	err := f.store.ApplyPlan(t.Context(), f.tracker.ID,
+		store.Plan{Status: store.StatusOK, Actions: actions}, f.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.addrs = addrs
 }
 
 func (f *probeFixture) reach(t *testing.T) store.Reach {
@@ -232,6 +261,49 @@ func TestProberRecoveryResetsMisses(t *testing.T) {
 	}
 	if kinds := f.changeTypes(t); len(kinds) != 1 {
 		t.Errorf("changes = %v, want only the original tracker_up", kinds)
+	}
+}
+
+// A name behind a CDN can hand out addresses never probed before every round.
+// Counting misses per address alone, each round starts over at 1, and the name
+// stays unmeasurable forever however long it has been failing.
+func TestProberChurningAddressesStillReachAVerdict(t *testing.T) {
+	f := newProbeFixture(t, "churner.example.com", []string{"1.2.3.4", "1.2.3.5"},
+		endpoint{"udp", 6969})
+
+	f.run(t)
+	if got := f.reach(t); got != store.ReachUnknown {
+		t.Fatalf("after one pass reach = %q, want unknown (one silent round is not proof)", got)
+	}
+
+	f.now = f.now.Add(time.Hour)
+	f.resolvesTo(t, "5.6.7.8", "5.6.7.9")
+	f.run(t)
+
+	if got := f.reach(t); got != store.ReachDead {
+		t.Errorf("reach = %q, want dead within the %d-round threshold", got, f.prober.MissThreshold)
+	}
+}
+
+// The streak belongs to the endpoint, but only an endpoint answering nowhere
+// has one. An address that answers keeps its neighbours' churn from reading as
+// the whole name dying.
+func TestProberChurnKeepsAnsweringEndpointPartial(t *testing.T) {
+	f := newProbeFixture(t, "tracker.example.com",
+		[]string{"1.2.3.4", "1.2.3.5", "1.2.3.6", "1.2.3.7"}, endpoint{"udp", 6969})
+	f.checker.results["udp:6969 1.2.3.4"] = live()
+	f.run(t)
+
+	// 1.2.3.4 keeps answering and 1.2.3.5 keeps failing, while the last two are
+	// replaced by addresses never probed before.
+	for _, fresh := range [][]string{{"5.6.7.8", "5.6.7.9"}, {"5.6.8.0", "5.6.8.1"}} {
+		f.now = f.now.Add(time.Hour)
+		f.resolvesTo(t, append([]string{"1.2.3.4", "1.2.3.5"}, fresh...)...)
+		f.run(t)
+
+		if got := f.reach(t); got != store.ReachPartial {
+			t.Fatalf("reach = %q, want partial: one address still answers", got)
+		}
 	}
 }
 

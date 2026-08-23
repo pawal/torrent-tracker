@@ -157,23 +157,34 @@ func orUnknown(s string) string {
 	return s
 }
 
-// IPsNeedingEnrichment returns active addresses that have never been enriched
+// IPsNeedingEnrichment returns observed addresses that have never been enriched
 // or whose data is older than maxAge, oldest first.
+//
+// Probed addresses count as observed, not just recorded ones. A rolling family
+// keeps no address records, so drawing only on those left it blind to its own
+// pool: the prefixes it collapses onto would freeze at whatever was known the
+// run it rolled.
 func (s *Store) IPsNeedingEnrichment(ctx context.Context, maxAge time.Duration, now time.Time, limit int) ([]IPRecord, error) {
 	if limit <= 0 {
 		limit = 500
 	}
+	cutoff := fmtTime(now.Add(-maxAge))
 	return queryAll(ctx, s, func(sc scanner) (IPRecord, error) {
 		var r IPRecord
 		err := sc.Scan(&r.IP, &r.Family)
 		return r, err
 	}, `
-		SELECT DISTINCT r.ip, r.family
-		FROM ip_records r
-		LEFT JOIN ip_info i ON i.ip = r.ip
-		WHERE r.active = 1 AND r.is_prefix = 0 AND (i.ip IS NULL OR i.fetched_at < ?)
-		ORDER BY COALESCE(i.fetched_at, ''), r.ip
-		LIMIT ?`, fmtTime(now.Add(-maxAge)), limit)
+		WITH observed(ip, family) AS (
+			SELECT ip, family FROM ip_records WHERE active = 1 AND is_prefix = 0
+			UNION
+			SELECT ip, family FROM probes
+		)
+		SELECT o.ip, o.family
+		FROM observed o
+		LEFT JOIN ip_info i ON i.ip = o.ip
+		WHERE i.ip IS NULL OR i.fetched_at < ?
+		ORDER BY COALESCE(i.fetched_at, ''), o.ip
+		LIMIT ?`, cutoff, limit)
 }
 
 // ipInfoSelect opens every query that reads whole placement rows.

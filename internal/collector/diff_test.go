@@ -442,18 +442,65 @@ func TestRollingCatchesAlternatingPools(t *testing.T) {
 	}
 }
 
+// The shape that got past the old rule entirely: a CDN holding each pool for
+// exactly SteadyAfter runs. Every hold wiped the churn count, so the change
+// never counted twice and the family sat below RollAfter forever, spraying the
+// change feed with add/remove pairs. Decay makes the rotation accumulate.
+func TestRollingCatchesAPoolHeldForTheSettlingWindow(t *testing.T) {
+	opts := rollOpts(3)
+	opts.SteadyAfter = 3
+	states := map[int]store.FamilyState{}
+
+	// Each pool arrives as a change and is then held for the whole settling
+	// window, so no two changes are within SteadyAfter runs of each other.
+	var answers []resolver.Result
+	for _, pool := range []string{"1400", "3c00", "5c00"} {
+		answers = append(answers, cdn(pool), cdn(pool), cdn(pool), cdn(pool))
+	}
+	answers = append(answers, cdn("7600"))
+	runs(states, opts, answers, nil)
+
+	if !states[6].Rolling {
+		t.Errorf("family 6 never rolled over %d runs of change-then-hold: %+v",
+			len(answers), states[6])
+	}
+}
+
+// Leaving rolling mode is a verdict, not a pause: the count starts over, so a
+// family that settled has to earn its way back with RollAfter fresh changes
+// rather than flipping on the next single change.
+func TestRollingClearsChurnOnLeavingRollingMode(t *testing.T) {
+	opts := rollOpts(1)
+	opts.SteadyAfter = 2
+	answer := cdn("1400")
+	states := map[int]store.FamilyState{
+		6: {Family: 6, Fingerprint: fingerprint(answer.Addrs), Rolling: true, Steady: 1, Churn: 9},
+	}
+
+	plan := Diff(nil, states, store.StatusOK, Observation{A: nodata(), AAAA: answer}, opts)
+
+	st := stateFor(t, plan, 6)
+	if st.Rolling {
+		t.Fatal("still rolling after the address set held still")
+	}
+	if st.Churn != 0 {
+		t.Errorf("churn = %d on leaving rolling mode, want it cleared", st.Churn)
+	}
+}
+
 // The other half of the same rule: a family that renumbers once and then holds
-// still is not rolling, it moved. Churn has to clear on its own or every
+// still is not rolling, it moved. Churn has to decay on its own or every
 // migration would be mistaken for a CDN.
 func TestRollingIgnoresAOneOffRenumbering(t *testing.T) {
 	opts := rollOpts(3)
 	opts.SteadyAfter = 3
 	states := map[int]store.FamilyState{}
 
-	// One change, then long enough at the new address set to count as settled,
-	// then another single change much later.
+	// One change, then long enough at the new address set to count as settled —
+	// the SteadyAfter runs of grace and one more to forget the change — then
+	// another single change much later.
 	a, b, c := cdn("1400"), cdn("3c00"), cdn("5c00")
-	runs(states, opts, []resolver.Result{a, b, b, b, b, b, c, c, c, c},
+	runs(states, opts, []resolver.Result{a, b, b, b, b, b, c, c, c, c, c},
 		func(int, store.Plan) {
 			if states[6].Rolling {
 				t.Fatalf("rolling after a single renumbering: %+v", states[6])

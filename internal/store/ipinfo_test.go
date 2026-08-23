@@ -214,6 +214,33 @@ func TestIPsNeedingEnrichment(t *testing.T) {
 	}
 }
 
+// A rolling family keeps a prefix record instead of address records, so its
+// addresses only ever appear as probes. Left out of the pending set, the prefix
+// it collapses onto could never follow the pool it was drawn from.
+func TestIPsNeedingEnrichmentIncludesProbedAddresses(t *testing.T) {
+	s := testStore(t)
+	trackerID, endpointID := newTrackerWithEndpoint(t, s, "cdn.example.com")
+	apply(t, s, trackerID, base, Action{
+		IP: "2600:9000:2094::/48", Family: 6, Kind: ActionAdd, Prefix: true,
+	})
+	probeRun(t, s, endpointID, base, verdict("2600:9000:207f::1", ProbeLive, base))
+
+	pending, err := s.IPsNeedingEnrichment(t.Context(), 24*time.Hour, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, p := range pending {
+		got[p.IP] = true
+	}
+	if !got["2600:9000:207f::1"] {
+		t.Errorf("pending = %v, want the probed address of the rolling family", got)
+	}
+	if got["2600:9000:2094::/48"] {
+		t.Error("a prefix record is not an address to enrich")
+	}
+}
+
 func TestNetworkSummaries(t *testing.T) {
 	s := testStore(t)
 	ctx := t.Context()

@@ -139,18 +139,20 @@ func Diff(prev []store.IPRecord, states map[int]store.FamilyState, prevStatus st
 }
 
 // rollingDecision updates one family's churn counters and reports whether it
-// should now be tracked by prefix. Churn survives an unchanged run and clears
-// only once the family has settled, on the same SteadyAfter that un-rolls it:
-// requiring RollAfter changes back to back would never catch a CDN that holds
-// one pool for an hour before swapping.
+// should now be tracked by prefix. Churn survives an unchanged run and then
+// decays one change per further settled run, rather than clearing outright:
+// zeroing it let a CDN that holds a pool for exactly SteadyAfter runs wipe the
+// count before it ever reached RollAfter, so the fastest churners never rolled.
+// A family that leaves rolling mode starts over, so re-rolling still costs
+// RollAfter fresh changes.
 func rollingDecision(state *store.FamilyState, addrs []string, opts Options) bool {
 	fp := fingerprint(addrs)
 	first := state.Fingerprint == ""
 	switch {
 	case first || fp == state.Fingerprint:
 		state.Steady++
-		if state.Steady >= opts.steadyAfter() {
-			state.Churn = 0
+		if state.Steady > opts.steadyAfter() && state.Churn > 0 {
+			state.Churn--
 		}
 	default:
 		state.Churn++
@@ -166,6 +168,7 @@ func rollingDecision(state *store.FamilyState, addrs []string, opts Options) boo
 		state.Rolling = true
 	case state.Rolling && state.Steady >= opts.steadyAfter():
 		state.Rolling = false
+		state.Churn = 0
 	}
 	state.ModeChanged = state.Rolling != was
 	if state.ModeChanged && !state.Rolling {

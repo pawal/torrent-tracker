@@ -66,7 +66,8 @@ func (s *Store) ListEndpoints(ctx context.Context, from, until time.Time) ([]Lis
 		SELECT t.id, t.name, t.created_at, e.id, e.scheme, e.port, e.path
 		FROM endpoints e
 		JOIN trackers t ON t.id = e.tracker_id
-		WHERE t.enabled = 1 AND t.control = 0 AND t.parked = 0 AND t.bep34_denies = 0`)
+		WHERE t.enabled = 1 AND t.control = 0 AND t.parked = 0 AND t.bep34_denies = 0
+		  AND e.retired_at IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("read list endpoints: %w", err)
 	}

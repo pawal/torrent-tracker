@@ -46,6 +46,9 @@ type Endpoint struct {
 	Port      int       `json:"port"`
 	Path      string    `json:"path"`
 	FirstSeen time.Time `json:"first_seen"`
+	// RetiredAt dates an endpoint dropped for answering nowhere on a port its
+	// host advertises. Not probed, not listed; an answer later revives it.
+	RetiredAt *time.Time `json:"retired_at,omitempty"`
 }
 
 // Label is the short form used where the hostname is already known.
@@ -114,7 +117,8 @@ func ReachChange(prev, next Reach) string {
 }
 
 // AddEndpoint records an announce endpoint for a tracker, reporting whether it
-// was new.
+// was new. A retired endpoint stays retired: a list claiming it exists is what
+// the retirement contradicted.
 func (s *Store) AddEndpoint(ctx context.Context, trackerID int64, scheme string, port int, path string, now time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT INTO endpoints (tracker_id, scheme, port, path, first_seen)
@@ -128,22 +132,57 @@ func (s *Store) AddEndpoint(ctx context.Context, trackerID int64, scheme string,
 	return n > 0, err
 }
 
-const endpointColumns = `id, tracker_id, scheme, port, path, first_seen`
+// AdoptEndpoint records an endpoint the tracker itself advertised, reviving one
+// retired earlier. It reports whether that was news.
+func (s *Store) AdoptEndpoint(ctx context.Context, trackerID int64, scheme string, port int, path string, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO endpoints (tracker_id, scheme, port, path, first_seen)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (tracker_id, scheme, port, path) DO UPDATE SET retired_at = NULL
+		WHERE endpoints.retired_at IS NOT NULL`,
+		trackerID, scheme, port, path, fmtTime(now))
+	if err != nil {
+		return false, fmt.Errorf("adopt endpoint %s:%d for tracker %d: %w", scheme, port, trackerID, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// RetireEndpoint stops probing and listing an endpoint, closing its open
+// intervals. The history stays.
+func (s *Store) RetireEndpoint(ctx context.Context, endpointID int64, now time.Time) error {
+	if err := s.PutProbes(ctx, []int64{endpointID}, nil, now); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE endpoints SET retired_at = ? WHERE id = ?`, fmtTime(now), endpointID)
+	if err != nil {
+		return fmt.Errorf("retire endpoint %d: %w", endpointID, err)
+	}
+	return nil
+}
+
+const endpointColumns = `id, tracker_id, scheme, port, path, first_seen, retired_at`
 
 func scanEndpoint(sc scanner) (Endpoint, error) {
 	var (
-		e     Endpoint
-		first string
+		e       Endpoint
+		first   string
+		retired sql.NullString
 	)
-	if err := sc.Scan(&e.ID, &e.TrackerID, &e.Scheme, &e.Port, &e.Path, &first); err != nil {
+	if err := sc.Scan(&e.ID, &e.TrackerID, &e.Scheme, &e.Port, &e.Path, &first, &retired); err != nil {
 		return e, err
 	}
 	var err error
-	e.FirstSeen, err = parseTime(first)
+	if e.FirstSeen, err = parseTime(first); err != nil {
+		return e, err
+	}
+	e.RetiredAt, err = parseNullTime(retired)
 	return e, err
 }
 
-// EndpointsFor returns a tracker's announce endpoints.
+// EndpointsFor returns a tracker's announce endpoints, retired ones included:
+// the detail page says what became of them.
 func (s *Store) EndpointsFor(ctx context.Context, trackerID int64) ([]Endpoint, error) {
 	return queryAll(ctx, s, scanEndpoint,
 		`SELECT `+endpointColumns+` FROM endpoints WHERE tracker_id = ? ORDER BY scheme, port, path`, trackerID)
@@ -421,10 +460,10 @@ func (s *Store) ProbeCoverage(ctx context.Context) (EndpointCoverage, error) {
 		SELECT (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0),
 		       (SELECT COUNT(DISTINCT e.tracker_id) FROM endpoints e
 		          JOIN trackers t ON t.id = e.tracker_id
-		         WHERE t.enabled = 1 AND t.control = 0),
+		         WHERE t.enabled = 1 AND t.control = 0 AND e.retired_at IS NULL),
 		       (SELECT COUNT(*) FROM endpoints e
 		          JOIN trackers t ON t.id = e.tracker_id
-		         WHERE t.enabled = 1 AND t.control = 0),
+		         WHERE t.enabled = 1 AND t.control = 0 AND e.retired_at IS NULL),
 		       (SELECT COUNT(*) FROM trackers
 		         WHERE enabled = 1 AND control = 0 AND reach_checked_at IS NOT NULL),
 		       (SELECT COUNT(DISTINCT e.tracker_id) FROM probes p
@@ -598,7 +637,8 @@ func (s *Store) ProbeTargets(ctx context.Context) ([]ProbeTarget, error) {
 	}
 
 	err = s.eachRow(ctx,
-		`SELECT `+endpointColumns+` FROM endpoints ORDER BY tracker_id, scheme, port, path`,
+		`SELECT `+endpointColumns+` FROM endpoints WHERE retired_at IS NULL
+		 ORDER BY tracker_id, scheme, port, path`,
 		nil, func(sc scanner) error {
 			e, err := scanEndpoint(sc)
 			if err != nil {

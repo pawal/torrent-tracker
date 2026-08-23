@@ -114,6 +114,56 @@ func TestAddEndpointIsIdempotent(t *testing.T) {
 	}
 }
 
+// A retired endpoint stops being probed and stops being offered to clients,
+// but what was measured on it stays.
+func TestRetireEndpoint(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	trackerID, endpointID := newListTracker(t, s, "tracker.example.com", base, "http", 80, "1.2.3.4")
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeDead, base))
+
+	must(t, s.RetireEndpoint(ctx, endpointID, base.Add(time.Hour)))
+
+	targets, err := s.ProbeTargets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Errorf("still probing %d targets, want none: the only endpoint was retired", len(targets))
+	}
+	entries, err := s.ListEndpoints(ctx, base, base.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("client list offers %v, want nothing", entries)
+	}
+	history, err := s.ProbeHistoryFor(ctx, trackerID, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 {
+		t.Errorf("history = %v, want the interval that was measured", history)
+	}
+
+	// A later answer on an advertised port brings it back.
+	fresh, err := s.AdoptEndpoint(ctx, trackerID, "http", 80, "/announce", base.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fresh {
+		t.Error("reviving a retired endpoint did not report as news")
+	}
+	eps, err := s.EndpointsFor(ctx, trackerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eps) != 1 || eps[0].RetiredAt != nil {
+		t.Errorf("endpoints = %+v, want the one endpoint back in service", eps)
+	}
+}
+
 func TestPutProbesRoundTrip(t *testing.T) {
 	s := testStore(t)
 	ctx := t.Context()

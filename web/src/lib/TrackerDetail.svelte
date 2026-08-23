@@ -144,8 +144,9 @@
     </div>
     {#if data.bep34 && !data.bep34_denies}
       <p class="sub">
-        Advertises <code>{data.bep34}</code> in DNS, so the UDP endpoints it names
-        are probed whether or not a list ever mentioned them.
+        Advertises <code>{data.bep34}</code> in DNS. A UDP port names an endpoint
+        outright; a TCP one is probed as both http and https, and whichever
+        answers is adopted.
       </p>
     {/if}
     {#if data.bep34_denies}
@@ -199,7 +200,14 @@
                 <tr>
                   <td class="mono nowrap">{e.scheme}:{e.port}</td>
                   <td colspan={mixedSoftware ? 5 : 4} class="muted">
-                    not probed yet{data.last_status === 'ok' ? '' : ' (nothing resolved to probe)'}
+                    {#if e.retired_at}
+                      retired {fmtTime(e.retired_at)} — advertised in DNS and answering
+                      under neither scheme, so it is no longer probed or listed
+                    {:else}
+                      not probed yet{data.last_status === 'ok'
+                        ? ''
+                        : ' (nothing resolved to probe)'}
+                    {/if}
                   </td>
                 </tr>
               {/each}

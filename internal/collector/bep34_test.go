@@ -2,9 +2,11 @@ package collector
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/pawal/torrent-tracker/internal/prober"
 	"github.com/pawal/torrent-tracker/internal/resolver"
 	"github.com/pawal/torrent-tracker/internal/store"
 )
@@ -163,6 +165,163 @@ func TestCollectClearsWithdrawnRecord(t *testing.T) {
 	}
 	if countKind(t, st, tr.ID, store.ChangeBEP34Removed) != 1 {
 		t.Error("no bep34_removed was recorded; withdrawing a record is news")
+	}
+}
+
+// advertises stores the record a name publishes, as a collection pass would.
+func (f *probeFixture) advertises(t *testing.T, record string) {
+	t.Helper()
+	if _, err := f.store.SetBEP34(t.Context(), f.tracker.ID, record, false, f.now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// probed reports whether a pass tried one endpoint on one address.
+func (f *probeFixture) probed(key string) bool {
+	f.checker.mu.Lock()
+	defer f.checker.mu.Unlock()
+	return slices.Contains(f.checker.calls, key)
+}
+
+// endpointsOf lists a tracker's endpoints as "scheme:port", retired ones
+// marked, so a test can state the whole set in one line.
+func endpointsOf(t *testing.T, st *store.Store, trackerID int64) []string {
+	t.Helper()
+	eps, err := st.EndpointsFor(t.Context(), trackerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, 0, len(eps))
+	for _, ep := range eps {
+		label := ep.Label()
+		if ep.RetiredAt != nil {
+			label += " (retired)"
+		}
+		out = append(out, label)
+	}
+	return out
+}
+
+// refused is a port that rejected the connection outright.
+func refused() prober.Result {
+	return prober.Result{State: prober.Unreachable, Reason: "connection refused"}
+}
+
+// A TCP preference names a port without naming a scheme, which is why they went
+// unused. Trying both is not a guess.
+func TestProberAdoptsAdvertisedTCPPort(t *testing.T) {
+	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"}, endpoint{"udp", 6969})
+	f.advertises(t, "BITTORRENT UDP:6969 TCP:8080")
+	f.checker.results["udp:6969 1.2.3.4"] = live()
+	f.checker.results["https:8080 1.2.3.4"] = live()
+
+	f.run(t)
+
+	want := []string{"https:8080", "udp:6969"}
+	if got := endpointsOf(t, f.store, f.tracker.ID); !slices.Equal(got, want) {
+		t.Fatalf("endpoints = %v, want %v", got, want)
+	}
+	if !f.probed("http:8080 1.2.3.4") {
+		t.Error("only one scheme was tried; the record does not say which it is")
+	}
+
+	// Adopted means probed from now on, like any other endpoint.
+	f.now = f.now.Add(time.Hour)
+	f.run(t)
+	probes, err := f.store.ProbesFor(t.Context(), f.tracker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(probes) != 2 {
+		t.Errorf("got %d probes, want one per endpoint", len(probes))
+	}
+}
+
+// Both schemes failing is an answer of its own: adopt neither.
+func TestProberAdoptsNothingWhenNeitherSchemeAnswers(t *testing.T) {
+	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"}, endpoint{"udp", 6969})
+	f.advertises(t, "BITTORRENT UDP:6969 TCP:80")
+	f.checker.results["udp:6969 1.2.3.4"] = live()
+	f.checker.results["http:80 1.2.3.4"] = notATracker()
+
+	f.run(t)
+
+	want := []string{"udp:6969"}
+	if got := endpointsOf(t, f.store, f.tracker.ID); !slices.Equal(got, want) {
+		t.Errorf("endpoints = %v, want %v: neither scheme answered", got, want)
+	}
+}
+
+// A port that already answers is settled, and probing the other scheme every
+// pass would only add load.
+func TestProberLeavesASatisfiedPreferenceAlone(t *testing.T) {
+	f := newProbeFixture(t, "tracker.example.com", []string{"1.2.3.4"}, endpoint{"https", 443})
+	f.advertises(t, "BITTORRENT TCP:443")
+	f.checker.results["https:443 1.2.3.4"] = live()
+
+	f.run(t)
+
+	if f.probed("http:443 1.2.3.4") {
+		t.Error("the other scheme was probed although the port answers")
+	}
+}
+
+// The atrack.pow7.com shape: an imported http:80 endpoint on a port the host
+// advertises and refuses. One refused port read as half a tracker being down.
+func TestProberRetiresARefusedPreference(t *testing.T) {
+	f := newProbeFixture(t, "atrack.pow7.com", []string{"1.2.3.4"},
+		endpoint{"udp", 6969}, endpoint{"http", 80})
+	f.advertises(t, "BITTORRENT UDP:6969 TCP:80")
+	f.checker.results["udp:6969 1.2.3.4"] = live()
+	f.checker.results["http:80 1.2.3.4"] = refused()
+	f.checker.results["https:80 1.2.3.4"] = refused()
+
+	f.run(t)
+	f.now = f.now.Add(time.Hour) // the second miss settles http:80 as dead
+	f.run(t)
+
+	want := []string{"http:80 (retired)", "udp:6969"}
+	if got := endpointsOf(t, f.store, f.tracker.ID); !slices.Equal(got, want) {
+		t.Fatalf("endpoints = %v, want %v", got, want)
+	}
+	if got := f.reach(t); got != store.ReachLive {
+		t.Errorf("reach = %q, want live: what is left of the tracker answers", got)
+	}
+	history, err := f.store.ProbeHistoryFor(t.Context(), f.tracker.ID, f.now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) == 0 {
+		t.Error("retiring the endpoint threw its history away")
+	}
+
+	// The port is still advertised, so it is still tried, and an answer brings
+	// the endpoint back.
+	f.checker.results["http:80 1.2.3.4"] = live()
+	f.now = f.now.Add(time.Hour)
+	f.run(t)
+
+	want = []string{"http:80", "udp:6969"}
+	if got := endpointsOf(t, f.store, f.tracker.ID); !slices.Equal(got, want) {
+		t.Errorf("endpoints = %v, want %v: the port answers again", got, want)
+	}
+}
+
+// Retiring the only endpoint would take the name out of probing, and a name
+// with nothing to probe reads unknown, which says less than dead.
+func TestProberKeepsTheLastEndpoint(t *testing.T) {
+	f := newProbeFixture(t, "parked.example.com", []string{"1.2.3.4"}, endpoint{"http", 80})
+	f.advertises(t, "BITTORRENT TCP:80")
+	f.checker.results["http:80 1.2.3.4"] = notATracker()
+
+	f.run(t)
+
+	want := []string{"http:80"}
+	if got := endpointsOf(t, f.store, f.tracker.ID); !slices.Equal(got, want) {
+		t.Fatalf("endpoints = %v, want %v", got, want)
+	}
+	if got := f.reach(t); got != store.ReachDead {
+		t.Errorf("reach = %q, want dead", got)
 	}
 }
 

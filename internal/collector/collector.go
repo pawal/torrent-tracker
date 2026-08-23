@@ -372,15 +372,14 @@ func (c *Collector) checkBEP34(ctx context.Context, t store.Tracker) error {
 	if changed {
 		c.log().Info("tracker preferences changed", "tracker", t.Name, "record", rec.Raw)
 	}
-	// A UDP preference names an endpoint outright. A TCP one names a port
-	// without saying whether it speaks HTTP or HTTPS, and guessing wrong would
-	// record a dead endpoint for a live tracker, so those are kept in the
-	// record and not adopted.
+	// A UDP preference names an endpoint outright, so it is adopted here. A TCP
+	// one names a port without saying whether it speaks HTTP or HTTPS, which
+	// only a probe can settle: the prober takes those.
 	for _, p := range rec.Prefs {
 		if p.Proto != "udp" {
 			continue
 		}
-		fresh, err := c.Store.AddEndpoint(ctx, t.ID, "udp", p.Port, "/announce", c.now())
+		fresh, err := c.Store.AdoptEndpoint(ctx, t.ID, "udp", p.Port, announcePath, c.now())
 		if err != nil {
 			return err
 		}

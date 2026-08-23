@@ -241,9 +241,17 @@ and the reason is shown on its page.
 
 **A UDP preference is adopted as an endpoint**, which makes a name added bare
 probeable on the operator's own say-so. `TCP:` names a port without saying
-whether it speaks HTTP or HTTPS, so those are recorded and not adopted. Nothing
-is ever removed on the strength of a record: a measured working endpoint
-outranks a list of ports.
+whether it speaks HTTP or HTTPS, so the probing pass tries both and adopts
+whichever answers, neither if neither does. A port that already answers is left
+alone.
+
+**An advertised port answering under no scheme retires the endpoint on it.** The
+host says a tracker is there and nothing serves it, so the entry an imported
+list contributed is what is wrong. It stops being probed and drops off the
+client lists instead of reading as half a tracker being down. The row and its
+probe history stay, the port keeps being tried, and an answer brings it back.
+The last endpoint of a name is never retired, since a name with nothing to probe
+reads unknown, which says less than dead.
 
 A SERVFAIL or timeout leaves the stored record alone; NOERROR and NXDOMAIN clear
 it. Changes are `bep34_added`, `bep34_changed` and `bep34_removed`. The query

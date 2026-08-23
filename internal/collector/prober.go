@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/pawal/torrent-tracker/internal/bep34"
 	"github.com/pawal/torrent-tracker/internal/prober"
 	"github.com/pawal/torrent-tracker/internal/resolver"
 	"github.com/pawal/torrent-tracker/internal/store"
@@ -180,6 +182,15 @@ func (p *Prober) probeOne(ctx context.Context, t store.ProbeTarget) (store.Reach
 		return "", 0, false, err
 	}
 
+	retired, err := p.preferences(ctx, t, addrs, probes)
+	if err != nil {
+		return "", 0, false, err
+	}
+	if len(retired) > 0 {
+		ids = slices.DeleteFunc(ids, func(id int64) bool { return retired[id] })
+		probes = slices.DeleteFunc(probes, func(pr store.Probe) bool { return retired[pr.EndpointID] })
+	}
+
 	if err := p.Store.PutProbes(ctx, ids, probes, now); err != nil {
 		return "", 0, false, err
 	}
@@ -192,6 +203,122 @@ func (p *Prober) probeOne(ctx context.Context, t store.ProbeTarget) (store.Reach
 		p.log().Info("reachability changed", "tracker", t.Tracker.Name, "reach", reach)
 	}
 	return reach, len(probes), changed, nil
+}
+
+// announcePath is what a discovered endpoint is assumed to serve: BEP 34
+// advertises a port and no path.
+const announcePath = "/announce"
+
+// preferences settles the TCP ports a name advertises in DNS. The record does
+// not say whether the port speaks HTTP or HTTPS, so the scheme is probed rather
+// than guessed: whichever answers is adopted, and an endpoint dead on a port
+// answering under no scheme is retired. Returns what it retired.
+func (p *Prober) preferences(ctx context.Context, t store.ProbeTarget, addrs []string,
+	probes []store.Probe,
+) (map[int64]bool, error) {
+	ports := tcpPreferences(t.Tracker.BEP34)
+	if len(ports) == 0 || len(addrs) == 0 {
+		return nil, nil
+	}
+	byEndpoint := map[int64][]store.Probe{}
+	for _, pr := range probes {
+		byEndpoint[pr.EndpointID] = append(byEndpoint[pr.EndpointID], pr)
+	}
+	reach := func(ep store.Endpoint) store.Reach { return store.RollUp(byEndpoint[ep.ID]) }
+
+	var retired map[int64]bool
+	left := len(t.Endpoints)
+	for _, port := range ports {
+		at := endpointsOn(t.Endpoints, port)
+		// A preference already met needs no exploring.
+		if slices.ContainsFunc(at, func(ep store.Endpoint) bool { return reach(ep).Answers() }) {
+			continue
+		}
+		if err := p.adopt(ctx, t, port, at, addrs[0]); err != nil {
+			return retired, err
+		}
+		for _, ep := range at {
+			// Retiring the last endpoint would drop the name out of probing,
+			// and unknown is a worse answer than dead.
+			if left <= 1 || reach(ep) != store.ReachDead {
+				continue
+			}
+			if err := p.Store.RetireEndpoint(ctx, ep.ID, p.now()); err != nil {
+				return retired, err
+			}
+			p.log().Info("retired an endpoint the host advertises and does not serve",
+				"tracker", t.Tracker.Name, "endpoint", ep.Label())
+			if retired == nil {
+				retired = map[int64]bool{}
+			}
+			retired[ep.ID] = true
+			left--
+		}
+	}
+	return retired, nil
+}
+
+// adopt probes the schemes an advertised port leaves open, taking on the first
+// that answers.
+func (p *Prober) adopt(ctx context.Context, t store.ProbeTarget, port int,
+	at []store.Endpoint, ip string,
+) error {
+	for _, scheme := range schemesFor(port) {
+		if slices.ContainsFunc(at, func(ep store.Endpoint) bool { return ep.Scheme == scheme }) {
+			continue
+		}
+		res := p.probe().Probe(ctx, prober.Target{
+			Host: t.Tracker.Name, IP: ip, Scheme: scheme, Port: port, Path: announcePath,
+		})
+		if res.State != prober.Live {
+			continue
+		}
+		fresh, err := p.Store.AdoptEndpoint(ctx, t.Tracker.ID, scheme, port, announcePath, p.now())
+		if err != nil {
+			return err
+		}
+		if fresh {
+			p.log().Info("adopted an endpoint advertised in DNS",
+				"tracker", t.Tracker.Name, "endpoint", fmt.Sprintf("%s:%d", scheme, port))
+		}
+		return nil
+	}
+	return nil
+}
+
+// schemesFor orders the two readings of a TCP port. Convention picks which to
+// try first; the probe picks which is adopted.
+func schemesFor(port int) []string {
+	if port == 443 || port == 8443 {
+		return []string{"https", "http"}
+	}
+	return []string{"http", "https"}
+}
+
+// tcpPreferences lists the TCP ports a stored BEP 34 record advertises; the UDP
+// ones are adopted at collection.
+func tcpPreferences(record string) []int {
+	if record == "" {
+		return nil
+	}
+	var ports []int
+	for _, pref := range bep34.Parse([]string{record}).Prefs {
+		if pref.Proto == "tcp" {
+			ports = append(ports, pref.Port)
+		}
+	}
+	return ports
+}
+
+// endpointsOn is the endpoints a TCP preference could be describing.
+func endpointsOn(eps []store.Endpoint, port int) []store.Endpoint {
+	var out []store.Endpoint
+	for _, ep := range eps {
+		if ep.Port == port && (ep.Scheme == "http" || ep.Scheme == "https") {
+			out = append(out, ep)
+		}
+	}
+	return out
 }
 
 type probeKey struct {

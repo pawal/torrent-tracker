@@ -350,7 +350,7 @@ type EnrichmentCoverage struct {
 func (s *Store) Coverage(ctx context.Context) (EnrichmentCoverage, error) {
 	var c EnrichmentCoverage
 	err := s.db.QueryRowContext(ctx, `
-		SELECT (SELECT COUNT(DISTINCT ip) FROM ip_records WHERE active = 1 AND is_prefix = 0),
+		SELECT (`+activeIPCount+`),
 		       (SELECT COUNT(DISTINCT r.ip) FROM ip_records r JOIN ip_info i ON i.ip = r.ip WHERE r.active = 1),
 		       (SELECT COUNT(DISTINCT r.ip) FROM ip_records r JOIN ip_info i ON i.ip = r.ip WHERE r.active = 1 AND i.asn != 0)`).
 		Scan(&c.ActiveIPs, &c.Enriched, &c.WithASN)

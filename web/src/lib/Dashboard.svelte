@@ -37,11 +37,14 @@
     <div class="stat">
       <span class="n">{stats.enabled_trackers}</span><span class="k">trackers tracked</span>
     </div>
-    <div class="stat">
+    <div class="stat" title="distinct addresses; one shared by several trackers counts once">
       <span class="n">{stats.active_ips}</span><span class="k">addresses live now</span>
     </div>
+    <div class="stat" title="one per tracker and address; the gap is trackers sharing a CDN">
+      <span class="n">{stats.active_ip_records}</span><span class="k">tracker-address pairs</span>
+    </div>
     <div class="stat">
-      <span class="n">{stats.total_ip_records}</span><span class="k">addresses ever seen</span>
+      <span class="n">{stats.total_ips}</span><span class="k">addresses ever seen</span>
     </div>
     <div class="stat">
       <span class="n">{stats.changes}</span><span class="k">changes recorded</span>

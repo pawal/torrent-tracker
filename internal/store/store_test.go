@@ -533,8 +533,11 @@ func TestStats(t *testing.T) {
 	a := mustAdd(t, s, "a.example.com")
 	b := mustAdd(t, s, "b.example.com")
 	mustAdd(t, s, "c.example.com")
+	d := mustAdd(t, s, "d.example.com")
 
 	apply(t, s, a.ID, base, adds("1.2.3.4", "5.6.7.8")...)
+	// The same address behind two trackers, the CDN shape issue 7 is about.
+	apply(t, s, d.ID, base, adds("5.6.7.8")...)
 	must(t, s.ApplyPlan(ctx, b.ID, Plan{Status: StatusNXDomain, StatusChanged: true}, base))
 	// Retire one address so active and total diverge.
 	apply(t, s, a.ID, base.Add(time.Hour),
@@ -544,17 +547,28 @@ func TestStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Trackers != 3 || st.EnabledTrackers != 3 {
-		t.Errorf("trackers=%d enabled=%d, want 3 and 3", st.Trackers, st.EnabledTrackers)
+	if st.Trackers != 4 || st.EnabledTrackers != 4 {
+		t.Errorf("trackers=%d enabled=%d, want 4 and 4", st.Trackers, st.EnabledTrackers)
 	}
 	if st.ActiveIPs != 1 {
-		t.Errorf("active_ips = %d, want 1", st.ActiveIPs)
+		t.Errorf("active_ips = %d, want 1 distinct address", st.ActiveIPs)
 	}
-	if st.TotalIPRecords != 2 {
-		t.Errorf("total_ip_records = %d, want 2", st.TotalIPRecords)
+	if st.ActiveIPRecords != 2 {
+		t.Errorf("active_ip_records = %d, want 2 tracker-address pairs", st.ActiveIPRecords)
 	}
-	if st.ByStatus[StatusOK] != 1 || st.ByStatus[StatusNXDomain] != 1 || st.ByStatus["unchecked"] != 1 {
-		t.Errorf("by_status = %v, want one each of ok/nxdomain/unchecked", st.ByStatus)
+	if st.TotalIPs != 2 {
+		t.Errorf("total_ips = %d, want 2", st.TotalIPs)
+	}
+	// The dashboard and the networks page must agree on "live now".
+	cov, err := s.Coverage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cov.ActiveIPs != st.ActiveIPs {
+		t.Errorf("coverage active_ips = %d, stats says %d", cov.ActiveIPs, st.ActiveIPs)
+	}
+	if st.ByStatus[StatusOK] != 2 || st.ByStatus[StatusNXDomain] != 1 || st.ByStatus["unchecked"] != 1 {
+		t.Errorf("by_status = %v, want two ok and one each of nxdomain/unchecked", st.ByStatus)
 	}
 }
 

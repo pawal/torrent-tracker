@@ -138,7 +138,8 @@ type Stats struct {
 	Trackers        int            `json:"trackers"`
 	EnabledTrackers int            `json:"enabled_trackers"`
 	ActiveIPs       int            `json:"active_ips"`
-	TotalIPRecords  int            `json:"total_ip_records"`
+	ActiveIPRecords int            `json:"active_ip_records"`
+	TotalIPs        int            `json:"total_ips"`
 	Changes         int            `json:"changes"`
 	Parked          int            `json:"parked"`
 	ByStatus        map[Status]int `json:"by_status"`
@@ -260,6 +261,10 @@ func Family(ip string) int {
 	return 4
 }
 
+// activeIPCount is the one definition of "addresses live now": a shared address
+// counts once. The per-tracker count is reported separately, as pairs.
+const activeIPCount = `SELECT COUNT(DISTINCT ip) FROM ip_records WHERE active = 1 AND is_prefix = 0`
+
 // Stats gathers dashboard counters.
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	st := Stats{ByStatus: map[Status]int{}}
@@ -267,12 +272,13 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT (SELECT COUNT(*) FROM trackers WHERE control = 0),
 		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0),
+		       (`+activeIPCount+`),
 		       (SELECT COUNT(*) FROM ip_records WHERE active = 1 AND is_prefix = 0),
-		       (SELECT COUNT(*) FROM ip_records),
+		       (SELECT COUNT(DISTINCT ip) FROM ip_records WHERE is_prefix = 0),
 		       (SELECT COUNT(*) FROM changes),
 		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 AND parked = 1)`)
 	if err := row.Scan(&st.Trackers, &st.EnabledTrackers, &st.ActiveIPs,
-		&st.TotalIPRecords, &st.Changes, &st.Parked); err != nil {
+		&st.ActiveIPRecords, &st.TotalIPs, &st.Changes, &st.Parked); err != nil {
 		return st, err
 	}
 

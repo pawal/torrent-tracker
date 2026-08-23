@@ -29,24 +29,26 @@ type listSpec struct {
 }
 
 // listSpecFor maps a list name, or a bare uptime percentage, onto its filter.
+// An uptime bar brings liveOnly with it: a list is for pasting into a client
+// today. live=0 asks for the history alone.
 func listSpecFor(name string) (listSpec, bool) {
 	switch name {
 	case "", "stable":
-		return listSpec{minUptime: stableUptime, minAge: stableMinAgeDays}, true
+		return listSpec{minUptime: stableUptime, minAge: stableMinAgeDays, liveOnly: true}, true
 	case "live":
 		return listSpec{liveOnly: true}, true
 	case "all":
 		return listSpec{}, true
 	case "udp":
-		return listSpec{minUptime: stableUptime, schemes: []string{"udp"}}, true
+		return listSpec{minUptime: stableUptime, schemes: []string{"udp"}, liveOnly: true}, true
 	case "http":
-		return listSpec{minUptime: stableUptime, schemes: []string{"http", "https"}}, true
+		return listSpec{minUptime: stableUptime, schemes: []string{"http", "https"}, liveOnly: true}, true
 	}
 	pct, err := strconv.Atoi(name)
 	if err != nil || pct < 0 || pct > 100 {
 		return listSpec{}, false
 	}
-	return listSpec{minUptime: float64(pct) / 100}, true
+	return listSpec{minUptime: float64(pct) / 100, liveOnly: pct > 0}, true
 }
 
 // wants reports whether an entry belongs on this list. An uptime bar needs a
@@ -66,7 +68,7 @@ func (sp listSpec) wants(e store.ListEntry) bool {
 func (sp listSpec) terms(days int) string {
 	var want []string
 	if sp.liveOnly {
-		want = append(want, "answers now")
+		want = append(want, "an answer now")
 	}
 	if sp.minUptime > 0 {
 		want = append(want, fmt.Sprintf("%.0f%% uptime over %d days", sp.minUptime*100, days))
@@ -135,6 +137,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		spec.minAge = held
 	}
 
+	spec.liveOnly = boolParam(r, "live", spec.liveOnly)
 	cutoff := until.AddDate(0, 0, -spec.minAge)
 	withV4Only := boolParam(r, "include_ipv4_only_trackers", true)
 	withV6Only := boolParam(r, "include_ipv6_only_trackers", true)

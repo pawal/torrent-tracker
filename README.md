@@ -447,7 +447,7 @@ response pastes straight into a client's tracker box.
 | `GET /api/list` | the stable list, the one worth recommending |
 | `GET /api/list/stable` | uptime of 95% or better, tracked for at least 10 days |
 | `GET /api/list/live` | every endpoint answering right now, however new |
-| `GET /api/list/{0-100}` | uptime at or above that percentage |
+| `GET /api/list/{0-100}` | uptime at or above that percentage, still answering |
 | `GET /api/list/udp` | the stable list, UDP only |
 | `GET /api/list/http` | the stable list, HTTP and HTTPS |
 | `GET /api/list/all` | every endpoint on record, dead or alive |
@@ -455,10 +455,14 @@ response pastes straight into a client's tracker box.
 | Parameter | Default | Effect |
 | --- | --- | --- |
 | `min_age_days` | 10 on `stable`, else 0 | how long a name must have been tracked |
+| `live` | on where an uptime bar applies | off drops the requirement to answer now |
 | `include_ipv4_only_trackers` | true | off requires an IPv6 address |
 | `include_ipv6_only_trackers` | true | off requires an IPv4 address |
 | `days` | 30 | the window uptime is measured over |
 | `per_as` | unlimited | most trackers to take from any one origin AS |
+
+**A list with an uptime bar also requires the endpoint to answer now.** Uptime
+is a claim about the window; a client is pasting the list today.
 
 **Uptime is the share of measured time the name answered**, over `?days`, not the
 share of checks: probes are hours apart and irregular, so counting them makes two

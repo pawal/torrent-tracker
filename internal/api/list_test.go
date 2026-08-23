@@ -149,8 +149,13 @@ func TestListPercentage(t *testing.T) {
 	h, st := testServer(t)
 	seedLists(t, st)
 
-	if got := urls(t, get(t, h, "/api/list/50")); len(got) != 2 {
-		t.Errorf("50%% list = %v, want both trackers", got)
+	// The flaky name cleared 50% over the window but is down right now, so an
+	// uptime bar alone does not put it on a list. Asking for no bar does.
+	if got := urls(t, get(t, h, "/api/list/50")); len(got) != 1 {
+		t.Errorf("50%% list = %v, want only the tracker answering now", got)
+	}
+	if got := urls(t, get(t, h, "/api/list/50?live=0")); len(got) != 2 {
+		t.Errorf("50%% list without the live requirement = %v, want both trackers", got)
 	}
 	if got := urls(t, get(t, h, "/api/list/0")); len(got) != 2 {
 		t.Errorf("0%% list = %v, want both trackers", got)
@@ -253,6 +258,29 @@ func TestListByScheme(t *testing.T) {
 	// is asking about.
 	if got := urls(t, get(t, h, "/api/list/http")); len(got) != 1 || !strings.HasPrefix(got[0], "https://") {
 		t.Errorf("http list = %v", got)
+	}
+}
+
+// The udp list shipped URLs for trackers that were dead at the time of asking:
+// a long enough history cleared the bar and nothing checked the present.
+func TestUptimeListsNeedAnAnswerNow(t *testing.T) {
+	h, st := testServer(t)
+	now := time.Now().UTC()
+	_, ep := listTracker(t, st, "wasgood.example.com", now.Add(-40*day), "udp", 6969, "1.2.3.4")
+	putVerdict(t, st, ep, "1.2.3.4", store.ProbeLive, now.Add(-40*day))
+	putVerdict(t, st, ep, "1.2.3.4", store.ProbeDead, now.Add(-time.Hour))
+
+	// 97% over the window, dead for the last hour.
+	for _, path := range []string{"/api/list", "/api/list/stable", "/api/list/udp"} {
+		if got := urls(t, get(t, h, path)); len(got) != 0 {
+			t.Errorf("%s = %v, want nothing: the tracker is down now", path, got)
+		}
+	}
+	if got := urls(t, get(t, h, "/api/list/stable?live=0")); len(got) != 1 {
+		t.Errorf("stable with live=0 = %v, want the name its history earned", got)
+	}
+	if got := urls(t, get(t, h, "/api/list/all")); len(got) != 1 {
+		t.Errorf("all = %v, want the name regardless", got)
 	}
 }
 

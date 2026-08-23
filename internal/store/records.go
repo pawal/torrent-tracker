@@ -34,6 +34,11 @@ type Action struct {
 	Family int
 	Kind   ActionKind
 	Prefix bool
+	// Silent keeps the record out of the change feed. Set on the adds that
+	// rewrite a family in its new tracking mode: ips_rolling and ips_stable
+	// already say what happened, and the addresses are the ones we were
+	// already watching, just recorded differently.
+	Silent bool
 }
 
 // FamilyState is the per-family churn bookkeeping behind rolling detection.
@@ -74,7 +79,7 @@ func (p Plan) Changes() int {
 		n++
 	}
 	for _, a := range p.Actions {
-		if a.Kind == ActionAdd || a.Kind == ActionRemove {
+		if (a.Kind == ActionAdd && !a.Silent) || a.Kind == ActionRemove {
 			n++
 		}
 	}
@@ -163,8 +168,10 @@ func (s *Store) ApplyPlan(ctx context.Context, trackerID int64, plan Plan, now t
 				trackerID, a.IP, a.Family, ts, ts, a.Prefix); err != nil {
 				return fmt.Errorf("add %s: %w", a.IP, err)
 			}
-			if err := insertChange(ctx, tx, trackerID, ts, addedType(a), a.IP, a.Family, ""); err != nil {
-				return err
+			if !a.Silent {
+				if err := insertChange(ctx, tx, trackerID, ts, addedType(a), a.IP, a.Family, ""); err != nil {
+					return err
+				}
 			}
 		case ActionRefresh:
 			if _, err := tx.ExecContext(ctx, `

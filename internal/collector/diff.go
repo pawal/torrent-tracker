@@ -61,7 +61,9 @@ type Options struct {
 	MissThreshold int
 	// RollAfter is how many changed runs switch a family to prefixes; 0 is off.
 	RollAfter int
-	// SteadyAfter is how many unchanged runs switch it back.
+	// SteadyAfter is how many unchanged runs switch it back. Keep it above
+	// RollAfter: without that hysteresis a borderline name oscillates between
+	// the two modes forever, and every flip re-records the whole family.
 	SteadyAfter int
 	// PrefixFor returns the prefix an address sits in, or "" if unknown.
 	PrefixFor func(ip string) string
@@ -76,7 +78,7 @@ func (o Options) missThreshold() int {
 
 func (o Options) steadyAfter() int {
 	if o.SteadyAfter < 1 {
-		return 3
+		return 6
 	}
 	return o.SteadyAfter
 }
@@ -213,7 +215,11 @@ func reconcile(prev []store.IPRecord, family int, target []string, rolling, mode
 		if _, ok := active[v]; ok {
 			kind = store.ActionRefresh
 		}
-		out = append(out, store.Action{IP: v, Family: family, Kind: kind, Prefix: rolling})
+		// A mode change re-records what supersede just closed. That pairing is
+		// bookkeeping, so it stays out of the feed the way the supersede does.
+		out = append(out, store.Action{
+			IP: v, Family: family, Kind: kind, Prefix: rolling, Silent: modeChanged,
+		})
 	}
 
 	// Iterate prev, not the map, so the plan is deterministic. A mode change

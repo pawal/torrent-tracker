@@ -592,8 +592,8 @@ func TestRunOnceCollapsesRollingFamilyToPrefix(t *testing.T) {
 		}
 	}
 
-	// The collapse itself closes the old address quietly: all it should add to
-	// the feed is the prefix and the mode change, never an ip_removed.
+	// The collapse itself is bookkeeping: all it should add to the feed is the
+	// mode change, never the re-record burst that goes with it.
 	changes, err := st.ChangesFor(ctx, tr.ID, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -605,8 +605,8 @@ func TestRunOnceCollapsesRollingFamilyToPrefix(t *testing.T) {
 	if counts[store.ChangeIPRemoved] != 0 {
 		t.Errorf("the collapse emitted %d ip_removed entries, want none", counts[store.ChangeIPRemoved])
 	}
-	if counts[store.ChangePrefixAdded] != 1 || counts[store.ChangeIPsRolling] != 1 {
-		t.Errorf("collapse change types = %v, want one prefix_added and one ips_rolling", counts)
+	if len(counts) != 1 || counts[store.ChangeIPsRolling] != 1 {
+		t.Errorf("collapse change types = %v, want one ips_rolling and nothing else", counts)
 	}
 
 	// And once rolling, a fresh set inside the same prefix is not news at all.

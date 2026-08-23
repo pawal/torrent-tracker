@@ -292,6 +292,34 @@ func TestApplyPlanRefreshClearsMisses(t *testing.T) {
 	}
 }
 
+// A silent add opens its interval like any other, but the feed hears only the
+// mode change that caused it.
+func TestApplyPlanSilentAddSkipsTheFeed(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	tr := mustAdd(t, s, "a.example.com")
+
+	must(t, s.ApplyPlan(ctx, tr.ID, Plan{
+		Status: StatusOK,
+		Actions: []Action{
+			{IP: "2600:9000:2094::/48", Family: 6, Kind: ActionAdd, Prefix: true, Silent: true},
+		},
+		States: []FamilyState{{Family: 6, Rolling: true, ModeChanged: true}},
+	}, base))
+
+	if got, _ := s.ActiveRecords(ctx, tr.ID); len(got) != 1 || !got[0].IsPrefix {
+		t.Errorf("active records = %+v, want the prefix recorded", got)
+	}
+	changes, err := s.ChangesFor(ctx, tr.ID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// tracker_added, then ips_rolling — no prefix_added.
+	if len(changes) != 2 || changes[0].Type != ChangeIPsRolling {
+		t.Errorf("changes = %+v, want tracker_added and ips_rolling only", changes)
+	}
+}
+
 func TestApplyPlanWritesChangeFeed(t *testing.T) {
 	s := testStore(t)
 	ctx := t.Context()

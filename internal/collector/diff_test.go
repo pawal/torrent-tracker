@@ -352,8 +352,13 @@ func TestRollingSupersedesAddressRecords(t *testing.T) {
 		"supersede 2600:9000:2094:1400::1",
 		"supersede 2600:9000:2094:3c00::1",
 		"add 2600:9000:2094::/48")
-	if n := plan.Changes(); n != 2 {
-		t.Errorf("changes = %d, want 2: the prefix add and the mode change", n)
+	if n := plan.Changes(); n != 1 {
+		t.Errorf("changes = %d, want 1: the mode change and nothing else", n)
+	}
+	for _, a := range plan.Actions {
+		if a.Kind == store.ActionAdd && !a.Silent {
+			t.Errorf("%+v should be silent: it re-records what the supersede closed", a)
+		}
 	}
 }
 
@@ -386,6 +391,34 @@ func TestRollingEndsWhenAddressesSettle(t *testing.T) {
 		t.Error("still rolling after the address set held still")
 	}
 	wantActions(t, plan, "supersede 2600:9000:2094::/48", "add 2600:9000:2094:1400::1")
+	if n := plan.Changes(); n != 1 {
+		t.Errorf("changes = %d, want 1: settling reports ips_stable, not the addresses behind it", n)
+	}
+}
+
+// Leaving rolling mode has to be harder than entering it. Without that
+// hysteresis a name on the boundary flips modes every few runs, and since each
+// flip re-records the whole family it drowns the change feed.
+func TestRollingIsHarderToLeaveThanToEnter(t *testing.T) {
+	opts := rollOpts(3) // SteadyAfter left at its default, which is the higher one
+	states := map[int]store.FamilyState{}
+
+	answers := []resolver.Result{cdn("1400"), cdn("3c00"), cdn("5c00"), cdn("7600")}
+	runs(states, opts, answers, nil)
+	if !states[6].Rolling {
+		t.Fatalf("family 6 not rolling after %d changed runs: %+v", len(answers)-1, states[6])
+	}
+
+	held := make([]resolver.Result, opts.RollAfter)
+	for i := range held {
+		held[i] = cdn("7600")
+	}
+	runs(states, opts, held, nil)
+
+	if !states[6].Rolling {
+		t.Errorf("holding still for the %d runs it took to start rolling also stopped it: %+v",
+			opts.RollAfter, states[6])
+	}
 }
 
 func TestRollingWaitsForEnrichment(t *testing.T) {

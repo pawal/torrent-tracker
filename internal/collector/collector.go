@@ -29,7 +29,7 @@ type Collector struct {
 	// RollAfter is how many changed runs switch a family to prefix tracking.
 	// Defaults to 3; negative keeps every address.
 	RollAfter int
-	// SteadyAfter is how many unchanged runs switch it back. Defaults to 3.
+	// SteadyAfter is how many unchanged runs switch it back. Defaults to 6.
 	SteadyAfter int
 	// Retention is how long the per-pass lookup log is kept. Defaults to 90
 	// days, three times the month the UI draws.

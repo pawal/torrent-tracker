@@ -162,7 +162,7 @@ func (rf *resolverFlags) register(fs *flag.FlagSet) {
 		"consecutive absences before an address is retired (raise to suppress round-robin churn)")
 	fs.IntVar(&rf.rollAfter, "roll-after", 3,
 		"changes before a family is tracked by prefix instead of by address (-1 to keep every address)")
-	fs.IntVar(&rf.steady, "steady-after", 3,
+	fs.IntVar(&rf.steady, "steady-after", 6,
 		"unchanged runs before a rolling family goes back to per-address tracking")
 	fs.DurationVar(&rf.retention, "lookup-retention", 90*24*time.Hour,
 		"how long the per-pass lookup log is kept")

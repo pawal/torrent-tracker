@@ -69,9 +69,11 @@ enriched address places every later one in the /48. An address inside no known
 prefix stays an address.
 
 Churn inside a prefix is not reported. A move to another prefix is a
-`prefix_added` and a `prefix_removed`. After `--steady-after` (3) settled runs
+`prefix_added` and a `prefix_removed`. After `--steady-after` (6) settled runs
 the family returns to per-address tracking; `--roll-after=-1` keeps every
-address.
+address. Settling is deliberately slower than rolling, so a borderline name
+cannot oscillate between the two; the switch itself reports only `ips_rolling`
+or `ips_stable`, never the re-recording of the family behind it.
 
 The changed runs need not be consecutive, since a CDN that swaps pools every
 few hours never produces adjacent changes. Churn therefore survives an

@@ -205,6 +205,14 @@ func TestGetTrackerDetailProbeHistory(t *testing.T) {
 	putVerdict(t, st, udp, "1.2.3.4", store.ProbeLive, now.AddDate(0, 0, -2))
 	putVerdict(t, st, udp, "1.2.3.4", store.ProbeDead, now.AddDate(0, 0, -1))
 
+	// The window slides with the wall clock while the seeded lookup is anchored
+	// to base, so log one inside the window the request actually asks about.
+	if err := st.ApplyPlan(ctx, tr.ID, store.Plan{
+		Status: store.StatusOK, Duration: 12 * time.Millisecond,
+	}, now.AddDate(0, 0, -1)); err != nil {
+		t.Fatal(err)
+	}
+
 	var got struct {
 		History     []store.ProbeInterval  `json:"probe_history"`
 		HistoryFrom time.Time              `json:"probe_history_from"`

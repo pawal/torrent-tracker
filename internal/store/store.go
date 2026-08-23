@@ -56,6 +56,9 @@ const (
 	ChangeIPsStable  = "ips_stable"
 	// ChangeParked marks a name as no longer a tracker but a parked domain.
 	ChangeParked = "parked"
+	// ChangeTrackerRetired marks a name that has never once resolved being
+	// dropped from collection. The history stays; the hourly query stops.
+	ChangeTrackerRetired = "tracker_retired"
 	// ChangeBEP34Added, ChangeBEP34Removed and ChangeBEP34Changed record a name
 	// publishing, withdrawing or moving the tracker preferences it advertises
 	// in DNS.
@@ -93,6 +96,10 @@ type Tracker struct {
 	// says it runs no trackers.
 	BEP34       string `json:"bep34,omitempty"`
 	BEP34Denies bool   `json:"bep34_denies,omitempty"`
+	// ResolveFails is the consecutive passes that produced no address, and
+	// FailingSince dates that streak. Both reset the moment the name resolves.
+	ResolveFails int        `json:"resolve_fails,omitempty"`
+	FailingSince *time.Time `json:"failing_since,omitempty"`
 }
 
 // IPRecord is one contiguous period during which an address was observed.

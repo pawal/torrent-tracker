@@ -258,6 +258,113 @@ func TestRunOnceSkipsDisabledTrackers(t *testing.T) {
 	}
 }
 
+// nameGone scripts a name that does not exist, in both families.
+func nameGone(fake *fakeResolver, name string) {
+	fake.set(name, resolver.TypeA, resolver.Result{Status: store.StatusNXDomain})
+	fake.set(name, resolver.TypeAAAA, resolver.Result{Status: store.StatusNXDomain})
+}
+
+// 28 of the live registry's names have never resolved and were queried every
+// hour regardless, for at least ten runs running.
+func TestRunOnceBacksOffNamesThatKeepFailing(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+	c.BackoffAfter = 3
+
+	addTracker(t, st, "gone.example.com")
+	nameGone(fake, "gone.example.com")
+
+	for i := range 3 {
+		sum, err := c.RunOnce(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum.Trackers != 1 || sum.Skipped != 0 {
+			t.Fatalf("pass %d: %d polled, %d skipped; want 1 and 0", i, sum.Trackers, sum.Skipped)
+		}
+		now = now.Add(time.Hour)
+	}
+
+	sum, err := c.RunOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Trackers != 0 || sum.Skipped != 1 {
+		t.Errorf("after the threshold: %d polled, %d skipped; want 0 and 1", sum.Trackers, sum.Skipped)
+	}
+
+	// A day on, it is due again.
+	now = now.Add(backoffInterval)
+	if sum, err = c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	} else if sum.Trackers != 1 {
+		t.Errorf("a day later %d polled, want 1", sum.Trackers)
+	}
+
+	// And an answer puts it back on the hourly clock.
+	fake.set("gone.example.com", resolver.TypeA, resolver.Result{
+		Status: store.StatusOK, Addrs: []string{"1.2.3.4"},
+	})
+	now = now.Add(backoffInterval)
+	if _, err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	if sum, err = c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	} else if sum.Trackers != 1 || sum.Skipped != 0 {
+		t.Errorf("after resolving: %d polled, %d skipped; want 1 and 0", sum.Trackers, sum.Skipped)
+	}
+}
+
+func TestRunOnceRetiresNamesThatNeverResolved(t *testing.T) {
+	c, st, fake := testCollector(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+	c.BackoffAfter = -1
+	c.RetireAfter = 30 * 24 * time.Hour
+
+	never := addTracker(t, st, "never.example.com")
+	addTracker(t, st, "quiet.example.com")
+	nameGone(fake, "never.example.com")
+	fake.set("quiet.example.com", resolver.TypeA, resolver.Result{
+		Status: store.StatusOK, Addrs: []string{"1.2.3.4"},
+	})
+
+	if _, err := c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// quiet.example.com answered once, then went the same way. Having resolved
+	// even once is what keeps it in the registry.
+	nameGone(fake, "quiet.example.com")
+
+	now = now.Add(31 * 24 * time.Hour)
+	sum, err := c.RunOnce(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Retired != 1 {
+		t.Fatalf("retired %d, want 1", sum.Retired)
+	}
+
+	left, _ := st.ListTrackers(ctx, false)
+	if len(left) != 1 || left[0].Name != "quiet.example.com" {
+		t.Errorf("still collected: %+v, want only quiet.example.com", left)
+	}
+	if got := countKind(t, st, never.ID, store.ChangeTrackerRetired); got != 1 {
+		t.Errorf("%d tracker_retired entries, want 1", got)
+	}
+	// The next pass leaves the retired name alone.
+	if sum, err = c.RunOnce(ctx); err != nil {
+		t.Fatal(err)
+	} else if sum.Trackers != 1 || sum.Retired != 0 {
+		t.Errorf("next pass: %d polled, %d retired; want 1 and 0", sum.Trackers, sum.Retired)
+	}
+}
+
 func TestRunOnceRecordsRun(t *testing.T) {
 	c, st, fake := testCollector(t)
 	ctx := context.Background()

@@ -151,6 +151,8 @@ type resolverFlags struct {
 	rollAfter int
 	steady    int
 	retention time.Duration
+	backoff   int
+	retire    time.Duration
 }
 
 func (rf *resolverFlags) register(fs *flag.FlagSet) {
@@ -166,6 +168,10 @@ func (rf *resolverFlags) register(fs *flag.FlagSet) {
 		"unchanged runs before a rolling family goes back to per-address tracking")
 	fs.DurationVar(&rf.retention, "lookup-retention", 90*24*time.Hour,
 		"how long the per-pass lookup log is kept")
+	fs.IntVar(&rf.backoff, "backoff-after", 24,
+		"consecutive passes without an address before a name is only retried daily (-1 to keep every name hourly)")
+	fs.DurationVar(&rf.retire, "retire-after", 30*24*time.Hour,
+		"how long a name that has never once resolved is kept in collection, history intact (-1 to keep it forever)")
 }
 
 // splitList turns a comma-separated flag value into a slice, dropping blanks.
@@ -202,6 +208,8 @@ func (rf *resolverFlags) collector(st *store.Store, log *slog.Logger) (*collecto
 		RollAfter:     rf.rollAfter,
 		SteadyAfter:   rf.steady,
 		Retention:     rf.retention,
+		BackoffAfter:  rf.backoff,
+		RetireAfter:   rf.retire,
 	}, nil
 }
 
@@ -329,6 +337,10 @@ func cmdPoll(ctx context.Context, st *store.Store, log *slog.Logger, args []stri
 	}
 	fmt.Printf("%d trackers, %d ok, %d failed, %d changes in %s\n",
 		sum.Trackers, sum.OK, sum.Errors, sum.Changes, sum.Duration.Round(time.Millisecond))
+	if sum.Skipped > 0 || sum.Retired > 0 {
+		fmt.Printf("%d backed off to a daily lookup, %d retired for never resolving\n",
+			sum.Skipped, sum.Retired)
+	}
 
 	if !pf.enabled {
 		return nil
@@ -593,6 +605,8 @@ func describe(c store.Change) string {
 		return fmt.Sprintf("! %s %s", c.Tracker, c.Detail)
 	case store.ChangeTrackerAdded:
 		return fmt.Sprintf("* %s added (%s)", c.Tracker, c.Detail)
+	case store.ChangeTrackerRetired:
+		return fmt.Sprintf("* %s retired (%s)", c.Tracker, c.Detail)
 	default:
 		return fmt.Sprintf("? %s %s %s", c.Tracker, c.Type, c.Detail)
 	}

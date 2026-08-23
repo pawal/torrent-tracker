@@ -163,6 +163,101 @@ func TestRemoveTrackerPurge(t *testing.T) {
 	}
 }
 
+// fails records one pass that produced no address.
+func fails(t *testing.T, s *Store, trackerID int64, at time.Time, status Status) {
+	t.Helper()
+	must(t, s.ApplyPlan(t.Context(), trackerID, Plan{Status: status}, at))
+}
+
+func TestApplyPlanTracksFailingStreak(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	tr := mustAdd(t, s, "a.example.com")
+
+	fails(t, s, tr.ID, base, StatusNXDomain)
+	fails(t, s, tr.ID, base.Add(time.Hour), StatusServFail)
+
+	got, err := s.TrackerByName(ctx, "a.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResolveFails != 2 {
+		t.Errorf("resolve_fails = %d, want 2", got.ResolveFails)
+	}
+	// The streak is dated from its first failure, not its latest.
+	if got.FailingSince == nil || !got.FailingSince.Equal(base) {
+		t.Errorf("failing_since = %v, want %v", got.FailingSince, base)
+	}
+
+	apply(t, s, tr.ID, base.Add(2*time.Hour), adds("1.2.3.4")...)
+	if got, _ = s.TrackerByName(ctx, "a.example.com"); got.ResolveFails != 0 || got.FailingSince != nil {
+		t.Errorf("after resolving: fails=%d since=%v, want 0 and nil", got.ResolveFails, got.FailingSince)
+	}
+}
+
+func TestRetireStale(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	month := 30 * 24 * time.Hour
+
+	never := mustAdd(t, s, "never.example.com")
+	young := mustAdd(t, s, "young.example.com")
+	quiet := mustAdd(t, s, "quiet.example.com")
+
+	fails(t, s, never.ID, base, StatusNXDomain)
+	fails(t, s, young.ID, base.Add(20*24*time.Hour), StatusNXDomain)
+	// Resolved once, then went quiet: a different fact, not a retirement.
+	apply(t, s, quiet.ID, base, adds("1.2.3.4")...)
+	fails(t, s, quiet.ID, base.Add(time.Hour), StatusNXDomain)
+
+	now := base.Add(month + time.Hour)
+	retired, err := s.RetireStale(ctx, now.Add(-month), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retired) != 1 || retired[0].Name != "never.example.com" {
+		t.Fatalf("retired = %+v, want only never.example.com", retired)
+	}
+
+	left, _ := s.ListTrackers(ctx, false)
+	if len(left) != 2 {
+		t.Errorf("%d trackers still collected, want young and quiet", len(left))
+	}
+	if all, _ := s.ListTrackers(ctx, true); len(all) != 3 {
+		t.Errorf("retirement lost a row: %d of 3 left", len(all))
+	}
+	if got := countKind(t, s, never.ID, ChangeTrackerRetired); got != 1 {
+		t.Errorf("%d tracker_retired entries, want 1", got)
+	}
+
+	// Nothing is left to retire on the next pass.
+	again, err := s.RetireStale(ctx, now.Add(-month), now)
+	if err != nil || len(again) != 0 {
+		t.Errorf("second pass retired %+v (err %v), want nothing", again, err)
+	}
+}
+
+func TestReAddingClearsTheFailingStreak(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	tr := mustAdd(t, s, "a.example.com")
+	fails(t, s, tr.ID, base, StatusNXDomain)
+	must(t, s.RemoveTracker(ctx, "a.example.com", false))
+
+	// A re-imported name starts its month over rather than being retired again
+	// on the next pass.
+	if _, _, err := s.AddTracker(ctx, "a.example.com", "list.txt", base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.TrackerByName(ctx, "a.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResolveFails != 0 || got.FailingSince != nil {
+		t.Errorf("revived with fails=%d since=%v, want 0 and nil", got.ResolveFails, got.FailingSince)
+	}
+}
+
 func TestRemoveMissingTracker(t *testing.T) {
 	s := testStore(t)
 	err := s.RemoveTracker(t.Context(), "nope.example.com", false)

@@ -238,9 +238,15 @@ func (s *Store) ApplyPlan(ctx context.Context, trackerID int64, plan Plan, now t
 		return err
 	}
 
+	// A pass that produced no address extends the failing streak; any address
+	// at all ends it. Backoff and retirement are both read off these two.
+	resolved := plan.Status == StatusOK
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE trackers SET last_status = ?, last_checked_at = ? WHERE id = ?`,
-		plan.Status, ts, trackerID); err != nil {
+		UPDATE trackers SET last_status = ?, last_checked_at = ?,
+			resolve_fails = CASE WHEN ? THEN 0 ELSE resolve_fails + 1 END,
+			failing_since = CASE WHEN ? THEN NULL ELSE COALESCE(failing_since, ?) END
+		WHERE id = ?`,
+		plan.Status, ts, resolved, resolved, ts, trackerID); err != nil {
 		return err
 	}
 

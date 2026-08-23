@@ -435,6 +435,29 @@ func TestProbeTargetsSkipsTrackersWithoutEndpoints(t *testing.T) {
 	}
 }
 
+// Missing an endpoint and never having resolved are separate reasons to read
+// unknown, and the second one no endpoint can fix.
+func TestProbeCoverageCountsNamesThatNeverResolved(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	trackerID, _ := newTrackerWithEndpoint(t, s, "resolves.example.com")
+	must(t, s.ApplyPlan(ctx, trackerID, Plan{Status: StatusOK, Actions: adds("1.2.3.4")}, now))
+	newTrackerWithEndpoint(t, s, "noaddress.example.com")
+	if _, _, err := s.AddTracker(ctx, "bare.example.com", "test", now); err != nil {
+		t.Fatal(err)
+	}
+
+	cov, err := s.ProbeCoverage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cov.NeverResolved != 2 {
+		t.Errorf("never_resolved = %d, want 2", cov.NeverResolved)
+	}
+}
+
 // The probes table keeps only the open interval, so the moment a verdict is
 // replaced the previous stretch has to land in probe_history or the tracker's
 // past is gone. Since moving is the signal, exactly as merge produces it.

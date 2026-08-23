@@ -49,6 +49,13 @@ NOERROR are authoritative and do retire.
 (default 2) sets how many consecutive absences it takes, which keeps rotating
 and round-robin DNS out of the feed.
 
+**A name that never resolves is not queried hourly forever.** After
+`--backoff-after` (24) passes with no address it drops to one lookup a day, and
+one answer puts it back on the hourly clock. A name that has never resolved
+*once* is retired after `--retire-after` (30 days): collection stops, the history
+stays, and re-adding it gives it a fresh month. Having resolved even once keeps
+a name — going quiet is a different fact. `-1` disables either.
+
 ## Rolling addresses
 
 A tracker behind a CDN answers with different edge addresses every TTL, and
@@ -405,8 +412,8 @@ back; `--purge` deletes it outright. The database path also comes from
 
 Collection flags (`serve`, `poll`): `--resolver` (comma-separated, defaults to
 `/etc/resolv.conf`), `--timeout`, `--retries`, `--workers`, `--miss-threshold`,
-`--roll-after`, `--steady-after`, `--lookup-retention`. `serve` adds `--addr`,
-`--interval` and `--no-collect`.
+`--roll-after`, `--steady-after`, `--lookup-retention`, `--backoff-after`,
+`--retire-after`. `serve` adds `--addr`, `--interval` and `--no-collect`.
 
 Probing flags (`probe`, `poll`, `serve`): `--probe-timeout`, `--probe-workers`,
 `--probe-fanout`, `--probe-miss-threshold`, `--probe-sample`,

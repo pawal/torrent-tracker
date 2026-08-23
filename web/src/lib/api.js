@@ -294,6 +294,8 @@ export function describe(c) {
       return { sign: '~', cls: 'net', text: c.detail }
     case 'tracker_added':
       return { sign: '*', cls: 'new', text: `added${c.detail ? ` (${c.detail})` : ''}` }
+    case 'tracker_retired':
+      return { sign: '*', cls: 'del', text: `retired — ${c.detail}` }
     case 'prefix_added':
       return { sign: '+', cls: 'add', text: `${c.ip} (prefix)` }
     case 'prefix_removed':

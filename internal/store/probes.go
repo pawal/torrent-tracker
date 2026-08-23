@@ -408,6 +408,9 @@ type EndpointCoverage struct {
 	// Identified is how many trackers gave up a software signature. Far fewer
 	// than Probed: UDP discloses nothing, and a dead endpoint says nothing.
 	Identified int `json:"identified"`
+	// NeverResolved is how many have never had an address at all. They read
+	// unknown for a different reason than the ones missing an endpoint.
+	NeverResolved int `json:"never_resolved"`
 }
 
 // ProbeCoverage separates "not probed yet" from "probed and dead", which the
@@ -427,8 +430,11 @@ func (s *Store) ProbeCoverage(ctx context.Context) (EndpointCoverage, error) {
 		       (SELECT COUNT(DISTINCT e.tracker_id) FROM probes p
 		          JOIN endpoints e ON e.id = p.endpoint_id
 		          JOIN trackers t ON t.id = e.tracker_id
-		         WHERE t.enabled = 1 AND t.control = 0 AND p.signature != '')`).
-		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed, &c.Identified)
+		         WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''),
+		       (SELECT COUNT(*) FROM trackers t
+		         WHERE t.enabled = 1 AND t.control = 0
+		           AND NOT EXISTS (SELECT 1 FROM ip_records r WHERE r.tracker_id = t.id))`).
+		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed, &c.Identified, &c.NeverResolved)
 	return c, err
 }
 

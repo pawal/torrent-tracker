@@ -12,7 +12,7 @@ import (
 var ErrNotFound = errors.New("tracker not found")
 
 const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at,
-	control, parked, reach, reach_checked_at, bep34, bep34_denies`
+	control, parked, reach, reach_checked_at, bep34, bep34_denies, resolve_fails, failing_since`
 
 func scanTracker(sc scanner) (Tracker, error) {
 	var (
@@ -20,9 +20,11 @@ func scanTracker(sc scanner) (Tracker, error) {
 		created    string
 		lastCheck  sql.NullString
 		reachCheck sql.NullString
+		failing    sql.NullString
 	)
 	if err := sc.Scan(&t.ID, &t.Name, &t.Source, &t.Enabled, &created, &t.LastStatus, &lastCheck,
-		&t.Control, &t.Parked, &t.Reach, &reachCheck, &t.BEP34, &t.BEP34Denies); err != nil {
+		&t.Control, &t.Parked, &t.Reach, &reachCheck, &t.BEP34, &t.BEP34Denies,
+		&t.ResolveFails, &failing); err != nil {
 		return t, err
 	}
 	var err error
@@ -33,6 +35,9 @@ func scanTracker(sc scanner) (Tracker, error) {
 		return t, err
 	}
 	if t.ReachCheckedAt, err = parseNullTime(reachCheck); err != nil {
+		return t, err
+	}
+	if t.FailingSince, err = parseNullTime(failing); err != nil {
 		return t, err
 	}
 	return t, nil
@@ -72,7 +77,11 @@ func (s *Store) AddTracker(ctx context.Context, name, source string, now time.Ti
 		return Tracker{}, false, err
 	case !enabled:
 		// Bring a previously removed tracker back without losing its history.
-		if _, err := tx.ExecContext(ctx, `UPDATE trackers SET enabled = 1 WHERE id = ?`, id); err != nil {
+		// The failing streak restarts, so a re-added name gets its full grace
+		// again instead of being retired on the next pass.
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE trackers SET enabled = 1, resolve_fails = 0, failing_since = NULL WHERE id = ?`,
+			id); err != nil {
 			return Tracker{}, false, err
 		}
 	}
@@ -95,6 +104,62 @@ func (s *Store) RemoveTracker(ctx context.Context, name string, purge bool) erro
 		q = `DELETE FROM trackers WHERE name = ?`
 	}
 	return s.execOne(ctx, name, q, name)
+}
+
+// Retirement is one name dropped from collection, with the evidence for it.
+type Retirement struct {
+	ID         int64
+	Name       string
+	LastStatus Status
+	Since      time.Time
+}
+
+func (r Retirement) detail(now time.Time) string {
+	return fmt.Sprintf("never resolved in %d days of trying; %s",
+		int(now.Sub(r.Since).Hours()/24), orUnchecked(r.LastStatus))
+}
+
+// RetireStale disables the names that have never once resolved and have been
+// failing since before cutoff, keeping their history. A name that resolved even
+// once is left alone: it went quiet, which is a different fact.
+func (s *Store) RetireStale(ctx context.Context, cutoff, now time.Time) ([]Retirement, error) {
+	stale, err := queryAll(ctx, s, func(sc scanner) (Retirement, error) {
+		var (
+			r     Retirement
+			since string
+		)
+		if err := sc.Scan(&r.ID, &r.Name, &r.LastStatus, &since); err != nil {
+			return r, err
+		}
+		var err error
+		r.Since, err = parseTime(since)
+		return r, err
+	}, `
+		SELECT id, name, last_status, failing_since FROM trackers
+		WHERE enabled = 1 AND control = 0
+		  AND failing_since IS NOT NULL AND failing_since <= ?
+		  AND NOT EXISTS (SELECT 1 FROM ip_records r WHERE r.tracker_id = trackers.id)
+		ORDER BY name`, fmtTime(cutoff))
+	if err != nil || len(stale) == 0 {
+		return nil, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	ts := fmtTime(now)
+	for _, r := range stale {
+		if _, err := tx.ExecContext(ctx, `UPDATE trackers SET enabled = 0 WHERE id = ?`, r.ID); err != nil {
+			return nil, fmt.Errorf("retire %s: %w", r.Name, err)
+		}
+		if err := insertChangeNullIP(ctx, tx, r.ID, ts, ChangeTrackerRetired, r.detail(now)); err != nil {
+			return nil, err
+		}
+	}
+	return stale, tx.Commit()
 }
 
 // ListTrackers returns trackers ordered by name, excluding control names.

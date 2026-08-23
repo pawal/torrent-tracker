@@ -34,6 +34,12 @@ type Collector struct {
 	// Retention is how long the per-pass lookup log is kept. Defaults to 90
 	// days, three times the month the UI draws.
 	Retention time.Duration
+	// BackoffAfter is how many consecutive passes without an address drop a
+	// name to one lookup a day. Defaults to 24; negative keeps it hourly.
+	BackoffAfter int
+	// RetireAfter is how long a name that never resolved keeps being collected.
+	// Defaults to 30 days; negative retires nothing.
+	RetireAfter time.Duration
 	// AfterRun, if set, is called after each pass inside Run. Enrichment hangs
 	// off this so freshly discovered addresses are annotated straight away.
 	AfterRun func(context.Context)
@@ -48,6 +54,10 @@ type Summary struct {
 	OK       int
 	Errors   int
 	Changes  int
+	// Skipped is the backed-off names not due this pass, Retired the ones
+	// dropped from collection for never having resolved.
+	Skipped  int
+	Retired  int
 	Duration time.Duration
 }
 
@@ -67,14 +77,49 @@ func (c *Collector) rollAfter() int {
 	return c.RollAfter
 }
 
-// RunOnce resolves every enabled tracker once and persists the outcome.
+func (c *Collector) backoffAfter() int {
+	switch {
+	case c.BackoffAfter < 0:
+		return 0 // never back off
+	case c.BackoffAfter == 0:
+		return 24
+	}
+	return c.BackoffAfter
+}
+
+func (c *Collector) retireAfter() time.Duration {
+	if c.RetireAfter < 0 {
+		return 0 // never retire
+	}
+	return orDefault(c.RetireAfter, 30*24*time.Hour)
+}
+
+// backoffInterval is how often a backed-off name is retried.
+const backoffInterval = 24 * time.Hour
+
+// due reports whether a tracker is to be resolved this pass.
+func due(t store.Tracker, now time.Time, after int) bool {
+	if after <= 0 || t.ResolveFails < after || t.LastCheckedAt == nil {
+		return true
+	}
+	return !t.LastCheckedAt.After(now.Add(-backoffInterval))
+}
+
+// RunOnce resolves every enabled tracker due this pass and persists the outcome.
 func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 	start := c.now()
 
-	trackers, err := c.Store.ListTrackers(ctx, false)
+	known, err := c.Store.ListTrackers(ctx, false)
 	if err != nil {
 		return Summary{}, err
 	}
+	trackers := make([]store.Tracker, 0, len(known))
+	for _, t := range known {
+		if due(t, start, c.backoffAfter()) {
+			trackers = append(trackers, t)
+		}
+	}
+	skipped := len(known) - len(trackers)
 
 	// Control names first: what they resolve to is a parking answer.
 	parking, err := c.resolveControls(ctx)
@@ -91,7 +136,7 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
-	sum := Summary{RunID: runID, Trackers: len(trackers)}
+	sum := Summary{RunID: runID, Trackers: len(trackers), Skipped: skipped}
 
 	type outcome struct {
 		name string
@@ -121,6 +166,7 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 	} else if n > 0 {
 		c.log().Info("pruned lookups", "rows", n)
 	}
+	sum.Retired = c.retire(ctx)
 
 	end := c.now()
 	sum.Duration = end.Sub(start)
@@ -129,8 +175,27 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 	}
 	c.log().Info("collection finished",
 		"trackers", sum.Trackers, "ok", sum.OK, "errors", sum.Errors,
+		"skipped", sum.Skipped, "retired", sum.Retired,
 		"changes", sum.Changes, "duration", sum.Duration.Round(time.Millisecond))
 	return sum, nil
+}
+
+// retire drops the names that have never once resolved, keeping their history.
+func (c *Collector) retire(ctx context.Context) int {
+	after := c.retireAfter()
+	if after == 0 {
+		return 0
+	}
+	now := c.now()
+	retired, err := c.Store.RetireStale(ctx, now.Add(-after), now)
+	if err != nil {
+		c.log().Error("retire stale trackers", "err", err)
+		return 0
+	}
+	for _, r := range retired {
+		c.log().Info("retired tracker", "tracker", r.Name, "status", r.LastStatus, "failing_since", r.Since)
+	}
+	return len(retired)
 }
 
 // collectOne resolves and persists a single tracker.

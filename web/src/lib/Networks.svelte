@@ -51,11 +51,21 @@
     {/if}
     {#if data.probes.probed === 0}
       <p class="muted">Run <code>trackerd probe</code> to populate this.</p>
-    {:else if data.probes.with_endpoints < data.probes.trackers}
-      <p class="muted">
-        {data.probes.trackers - data.probes.with_endpoints} names were added without an
-        announce endpoint and cannot be probed; they count as unknown.
-      </p>
+    {:else}
+      <!-- Two ways to be unknown, and only one of them is about the endpoint. -->
+      {#if data.probes.with_endpoints < data.probes.trackers}
+        <p class="muted">
+          {data.probes.trackers - data.probes.with_endpoints} names were added without an
+          announce endpoint and cannot be probed; they count as unknown.
+        </p>
+      {/if}
+      {#if data.probes.never_resolved > 0}
+        <p class="muted">
+          {data.probes.never_resolved} have never resolved to an address at all, endpoint or
+          not, so there has never been anything to probe. They are retried daily and retired
+          after a month, history kept.
+        </p>
+      {/if}
     {/if}
   </div>
 

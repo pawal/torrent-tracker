@@ -476,6 +476,14 @@ is a single failure domain wearing forty hats; `per_as=3` takes the seed list
 from 323 endpoints to 216. A tracker whose network is unknown is never dropped,
 and the endpoints of one hostname count once.
 
+**The age floor is clamped to the history held.** A ten-day floor on a database
+a week old drops every name, so a young database serves the best list it can
+instead of nothing.
+
+**A body can lead with `#` comment lines**, saying that the age floor was
+relaxed or why the list came back empty. Clients ignore them; the URLs follow
+after a blank line.
+
 Parked, disabled and control names never appear, nor do hosts that deny
 BitTorrent traffic in DNS. Nothing is stable until something has been measured,
 so `stable` and the per-scheme lists come back empty on a database `probe` has

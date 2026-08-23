@@ -61,6 +61,40 @@ func (sp listSpec) wants(e store.ListEntry) bool {
 	return len(sp.schemes) == 0 || slices.Contains(sp.schemes, e.Scheme)
 }
 
+// terms spells out what a list asked for, for the comment that explains an
+// empty body.
+func (sp listSpec) terms(days int) string {
+	var want []string
+	if sp.liveOnly {
+		want = append(want, "answers now")
+	}
+	if sp.minUptime > 0 {
+		want = append(want, fmt.Sprintf("%.0f%% uptime over %d days", sp.minUptime*100, days))
+	}
+	if len(sp.schemes) > 0 {
+		want = append(want, strings.Join(sp.schemes, " or "))
+	}
+	if sp.minAge > 0 {
+		want = append(want, fmt.Sprintf("%d days of history", sp.minAge))
+	}
+	if len(want) == 0 {
+		return "no endpoint on record"
+	}
+	return "no endpoint has " + strings.Join(want, ", ")
+}
+
+// historyDays is how much history the database actually holds, taken from the
+// oldest name in it. An age floor cannot ask for more than that.
+func historyDays(entries []store.ListEntry, until time.Time) int {
+	oldest := until
+	for _, e := range entries {
+		if e.Added.Before(oldest) {
+			oldest = e.Added
+		}
+	}
+	return int(until.Sub(oldest) / (24 * time.Hour))
+}
+
 // handleList serves a client-facing list: plain text, one announce URL per
 // entry and blank line delimited, so the body pastes straight into a client.
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -82,12 +116,23 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	window := min(max(days, 1), maxWindowDays)
 	until := time.Now().UTC()
-	from := until.AddDate(0, 0, -min(max(days, 1), maxWindowDays))
+	from := until.AddDate(0, 0, -window)
 	entries, err := s.Store.ListEndpoints(r.Context(), from, until)
 	if err != nil {
 		s.serverError(w, err)
 		return
+	}
+
+	// A floor longer than the database has existed drops every name, which is
+	// how a fresh database serves an empty flagship list. Clamp it to the
+	// history held so the list is the best one available, and say so.
+	var notes []string
+	if held := historyDays(entries, until); spec.minAge > held {
+		notes = append(notes, fmt.Sprintf(
+			"age floor relaxed from %d to %d days: that is all the history held", spec.minAge, held))
+		spec.minAge = held
 	}
 
 	cutoff := until.AddDate(0, 0, -spec.minAge)
@@ -115,7 +160,19 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		keep = capPerAS(keep, nets, perAS)
 	}
 
+	if len(keep) == 0 {
+		notes = append(notes, spec.terms(window))
+	}
+
+	// Comments lead the body. It is plain text meant for pasting, and a client
+	// reading a tracker list ignores a # line.
 	var b strings.Builder
+	for _, note := range notes {
+		fmt.Fprintf(&b, "# %s\n", note)
+	}
+	if len(notes) > 0 && len(keep) > 0 {
+		b.WriteString("\n")
+	}
 	for _, e := range keep {
 		b.WriteString(e.URL)
 		b.WriteString("\n\n")

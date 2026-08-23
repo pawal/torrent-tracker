@@ -74,7 +74,7 @@ func endpointOf(t *testing.T, st *store.Store, trackerID int64, scheme string) i
 }
 
 // urls reads a list response back into the announce URLs it carries, checking
-// it was served as text along the way.
+// it was served as text along the way. A comment line is not a URL.
 func urls(t *testing.T, rec *httptest.ResponseRecorder) []string {
 	t.Helper()
 	if rec.Code != http.StatusOK {
@@ -85,7 +85,20 @@ func urls(t *testing.T, rec *httptest.ResponseRecorder) []string {
 	}
 	out := []string{}
 	for _, line := range strings.Split(rec.Body.String(), "\n") {
-		if line != "" {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// notes reads the comment lines a list leads with, which say why a spec was
+// relaxed or why the body is empty.
+func notes(t *testing.T, rec *httptest.ResponseRecorder) []string {
+	t.Helper()
+	out := []string{}
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if strings.HasPrefix(line, "#") {
 			out = append(out, line)
 		}
 	}
@@ -167,23 +180,61 @@ func TestListNeedsAMeasurementToClearTheBar(t *testing.T) {
 func TestListMinAge(t *testing.T) {
 	h, st := testServer(t)
 	now := time.Now().UTC()
+	_, old := listTracker(t, st, "old.example.com", now.Add(-20*day), "udp", 6969, "1.2.3.9")
+	putVerdict(t, st, old, "1.2.3.9", store.ProbeLive, now.Add(-20*day))
 	_, fresh := listTracker(t, st, "fresh.example.com", now.Add(-2*day), "udp", 6969, "1.2.3.4")
 	putVerdict(t, st, fresh, "1.2.3.4", store.ProbeLive, now.Add(-2*day))
 
-	// Two days of history is not enough to call a tracker stable, so the
-	// default ten-day floor drops it. Asking for no floor brings it back, and
-	// min_age_days=0 must mean zero rather than restore the default.
-	if got := urls(t, get(t, h, "/api/list/stable")); len(got) != 0 {
-		t.Errorf("stable = %v, want nothing: the name is two days old", got)
+	// The database holds twenty days, so the default ten-day floor means
+	// something: two days of history is not enough to call a tracker stable.
+	// Asking for no floor brings it back, and min_age_days=0 must mean zero
+	// rather than restore the default.
+	got := urls(t, get(t, h, "/api/list/stable"))
+	if len(got) != 1 || !strings.Contains(got[0], "old.example.com") {
+		t.Errorf("stable = %v, want only the name older than the floor", got)
 	}
-	if got := urls(t, get(t, h, "/api/list/stable?min_age_days=0")); len(got) != 1 {
-		t.Errorf("stable with no age floor = %v, want the fresh name", got)
+	if got := urls(t, get(t, h, "/api/list/stable?min_age_days=0")); len(got) != 2 {
+		t.Errorf("stable with no age floor = %v, want the fresh name too", got)
 	}
-	if got := urls(t, get(t, h, "/api/list/stable?min_age_days=1")); len(got) != 1 {
-		t.Errorf("stable with a one-day floor = %v, want the fresh name", got)
+	if got := urls(t, get(t, h, "/api/list/stable?min_age_days=1")); len(got) != 2 {
+		t.Errorf("stable with a one-day floor = %v, want the fresh name too", got)
 	}
 	if rec := get(t, h, "/api/list/stable?min_age_days=soon"); rec.Code != http.StatusBadRequest {
 		t.Errorf("garbage min_age_days = %d, want 400", rec.Code)
+	}
+}
+
+func TestListAgeFloorClampsToTheHistoryHeld(t *testing.T) {
+	h, st := testServer(t)
+	now := time.Now().UTC()
+	_, ep := listTracker(t, st, "young.example.com", now.Add(-3*day), "udp", 6969, "1.2.3.4")
+	putVerdict(t, st, ep, "1.2.3.4", store.ProbeLive, now.Add(-3*day))
+
+	// A three-day-old database can never clear a ten-day floor, and serving
+	// nothing is the wrong way to say "not enough history yet": hand over the
+	// best list there is and note in a comment that the floor was relaxed.
+	rec := get(t, h, "/api/list/stable")
+	if got := urls(t, rec); len(got) != 1 {
+		t.Errorf("stable = %v, want the one name the database holds", got)
+	}
+	if n := notes(t, rec); len(n) != 1 || !strings.Contains(n[0], "to 3 days") {
+		t.Errorf("notes = %v, want one saying the floor was relaxed to three days", n)
+	}
+}
+
+func TestListSaysWhyItIsEmpty(t *testing.T) {
+	h, st := testServer(t)
+	now := time.Now().UTC()
+	listTracker(t, st, "unprobed.example.com", now.Add(-20*day), "udp", 6969, "1.2.3.4")
+
+	// Twenty days of history, so nothing was relaxed. The list is empty because
+	// no measurement clears the uptime bar, and a bare 200 says none of that.
+	rec := get(t, h, "/api/list/stable")
+	if got := urls(t, rec); len(got) != 0 {
+		t.Fatalf("stable = %v, want nothing: the name has no measured uptime", got)
+	}
+	if n := notes(t, rec); len(n) != 1 || !strings.Contains(n[0], "95% uptime") {
+		t.Errorf("notes = %v, want one naming the bar nothing cleared", n)
 	}
 }
 

@@ -108,7 +108,13 @@
                 {/if}
               </td>
               <td>
-                {#if t.state}
+                <!-- Silent since the window opened and silent since it was
+                     added are different names: the second never was a tracker. -->
+                {#if t.state && !t.state.answering && !t.last_live_at}
+                  <span class="pill dead" title="resolves, but no probe has ever answered">
+                    never answered
+                  </span>
+                {:else if t.state}
                   <span
                     class="pill {t.state.answering ? 'live' : 'dead'}"
                     title="{t.state.answering ? 'answering' : 'silent'} since {fmtTime(

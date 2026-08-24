@@ -12,7 +12,8 @@ import (
 var ErrNotFound = errors.New("tracker not found")
 
 const trackerColumns = `id, name, source, enabled, created_at, last_status, last_checked_at,
-	control, parked, reach, reach_checked_at, bep34, bep34_denies, resolve_fails, failing_since`
+	control, parked, reach, reach_checked_at, bep34, bep34_denies, resolve_fails, failing_since,
+	last_live_at`
 
 func scanTracker(sc scanner) (Tracker, error) {
 	var (
@@ -21,10 +22,11 @@ func scanTracker(sc scanner) (Tracker, error) {
 		lastCheck  sql.NullString
 		reachCheck sql.NullString
 		failing    sql.NullString
+		lastLive   sql.NullString
 	)
 	if err := sc.Scan(&t.ID, &t.Name, &t.Source, &t.Enabled, &created, &t.LastStatus, &lastCheck,
 		&t.Control, &t.Parked, &t.Reach, &reachCheck, &t.BEP34, &t.BEP34Denies,
-		&t.ResolveFails, &failing); err != nil {
+		&t.ResolveFails, &failing, &lastLive); err != nil {
 		return t, err
 	}
 	var err error
@@ -38,6 +40,9 @@ func scanTracker(sc scanner) (Tracker, error) {
 		return t, err
 	}
 	if t.FailingSince, err = parseNullTime(failing); err != nil {
+		return t, err
+	}
+	if t.LastLiveAt, err = parseNullTime(lastLive); err != nil {
 		return t, err
 	}
 	return t, nil
@@ -106,26 +111,40 @@ func (s *Store) RemoveTracker(ctx context.Context, name string, purge bool) erro
 	return s.execOne(ctx, name, q, name)
 }
 
+// RetireReason is why a name was dropped from collection. Both are "it has
+// never worked", measured on the two things that can fail.
+type RetireReason string
+
+const (
+	RetireNeverResolved RetireReason = "never resolved"
+	// RetireNeverAnswered is a name resolving perfectly well that no probe has
+	// ever got a tracker reply out of: half the registry is parked domains that
+	// never were trackers. A name that answered once and went quiet is left
+	// alone, however long ago that was.
+	RetireNeverAnswered RetireReason = "never answered"
+)
+
 // Retirement is one name dropped from collection, with the evidence for it.
 type Retirement struct {
 	ID         int64
 	Name       string
 	LastStatus Status
 	Since      time.Time
+	Reason     RetireReason
 }
 
 func (r Retirement) detail(now time.Time) string {
-	return fmt.Sprintf("never resolved in %d days of trying; %s",
-		int(now.Sub(r.Since).Hours()/24), orUnchecked(r.LastStatus))
+	days := int(now.Sub(r.Since).Hours() / 24)
+	if r.Reason == RetireNeverAnswered {
+		return fmt.Sprintf("resolves, but no probe has answered in %d days", days)
+	}
+	return fmt.Sprintf("never resolved in %d days of trying; %s", days, orUnchecked(r.LastStatus))
 }
 
-// RetireStale disables the names that have never once resolved and have been
-// failing since before cutoff, keeping their history. A name that resolved even
-// once is left alone: it went quiet, which is a different fact.
-func (s *Store) RetireStale(ctx context.Context, cutoff, now time.Time) ([]Retirement, error) {
-	stale, err := queryAll(ctx, s, func(sc scanner) (Retirement, error) {
+func scanRetirement(reason RetireReason) func(scanner) (Retirement, error) {
+	return func(sc scanner) (Retirement, error) {
 		var (
-			r     Retirement
+			r     = Retirement{Reason: reason}
 			since string
 		)
 		if err := sc.Scan(&r.ID, &r.Name, &r.LastStatus, &since); err != nil {
@@ -134,14 +153,42 @@ func (s *Store) RetireStale(ctx context.Context, cutoff, now time.Time) ([]Retir
 		var err error
 		r.Since, err = parseTime(since)
 		return r, err
-	}, `
+	}
+}
+
+// RetireStale disables the names that have never worked and have failed that
+// way since before cutoff, keeping their history: never resolved at all, or
+// resolving while no probe has ever answered. A name that answered once is left
+// alone, however quiet it has gone since.
+func (s *Store) RetireStale(ctx context.Context, cutoff, now time.Time) ([]Retirement, error) {
+	stale, err := queryAll(ctx, s, scanRetirement(RetireNeverResolved), `
 		SELECT id, name, last_status, failing_since FROM trackers
 		WHERE enabled = 1 AND control = 0
 		  AND failing_since IS NOT NULL AND failing_since <= ?
 		  AND NOT EXISTS (SELECT 1 FROM ip_records r WHERE r.tracker_id = trackers.id)
 		ORDER BY name`, fmtTime(cutoff))
-	if err != nil || len(stale) == 0 {
+	if err != nil {
 		return nil, err
+	}
+	// The clock is how long the dead verdicts have stood, so a name is retired
+	// for a month of silence rather than a month of being on the list. An
+	// unknown verdict is recent enough to hold it back: unknown says less than
+	// dead.
+	silent, err := queryAll(ctx, s, scanRetirement(RetireNeverAnswered), `
+		SELECT t.id, t.name, t.last_status, MAX(p.since) FROM trackers t
+		JOIN endpoints e ON e.tracker_id = t.id AND e.retired_at IS NULL
+		JOIN probes p ON p.endpoint_id = e.id
+		WHERE t.enabled = 1 AND t.control = 0
+		  AND t.reach = ? AND t.last_live_at IS NULL
+		GROUP BY t.id
+		HAVING MAX(p.since) <= ?
+		ORDER BY t.name`, ReachDead, fmtTime(cutoff))
+	if err != nil {
+		return nil, err
+	}
+	stale = append(stale, silent...)
+	if len(stale) == 0 {
+		return nil, nil
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)

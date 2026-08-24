@@ -54,6 +54,16 @@
         <span class="n">{stats.parked}</span><span class="k">parked, not trackers</span>
       </div>
     {/if}
+    {#if stats.never_answered}
+      <div class="stat" title="resolves fine; no probe has ever got a tracker reply out of it">
+        <span class="n">{stats.never_answered}</span><span class="k">never answered</span>
+      </div>
+    {/if}
+    {#if stats.went_quiet}
+      <div class="stat" title="answered at some point, and does not now">
+        <span class="n">{stats.went_quiet}</span><span class="k">answered once, now dead</span>
+      </div>
+    {/if}
   </div>
 
   {#if statusEntries.length}

@@ -37,8 +37,9 @@ type Collector struct {
 	// BackoffAfter is how many consecutive passes without an address drop a
 	// name to one lookup a day. Defaults to 24; negative keeps it hourly.
 	BackoffAfter int
-	// RetireAfter is how long a name that never resolved keeps being collected.
-	// Defaults to 30 days; negative retires nothing.
+	// RetireAfter is how long a name that never resolved, or never answered a
+	// probe, keeps being collected. Defaults to 30 days; negative retires
+	// nothing.
 	RetireAfter time.Duration
 	// AfterRun, if set, is called after each pass inside Run. Enrichment hangs
 	// off this so freshly discovered addresses are annotated straight away.
@@ -55,7 +56,7 @@ type Summary struct {
 	Errors   int
 	Changes  int
 	// Skipped is the backed-off names not due this pass, Retired the ones
-	// dropped from collection for never having resolved.
+	// dropped from collection for never having worked.
 	Skipped  int
 	Retired  int
 	Duration time.Duration
@@ -180,7 +181,7 @@ func (c *Collector) RunOnce(ctx context.Context) (Summary, error) {
 	return sum, nil
 }
 
-// retire drops the names that have never once resolved, keeping their history.
+// retire drops the names that have never worked, keeping their history.
 func (c *Collector) retire(ctx context.Context) int {
 	after := c.retireAfter()
 	if after == 0 {
@@ -193,7 +194,8 @@ func (c *Collector) retire(ctx context.Context) int {
 		return 0
 	}
 	for _, r := range retired {
-		c.log().Info("retired tracker", "tracker", r.Name, "status", r.LastStatus, "failing_since", r.Since)
+		c.log().Info("retired tracker", "tracker", r.Name, "reason", r.Reason,
+			"status", r.LastStatus, "failing_since", r.Since)
 	}
 	return len(retired)
 }

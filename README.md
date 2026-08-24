@@ -53,8 +53,9 @@ and round-robin DNS out of the feed.
 `--backoff-after` (24) passes with no address it drops to one lookup a day, and
 one answer puts it back on the hourly clock. A name that has never resolved
 *once* is retired after `--retire-after` (30 days): collection stops, the history
-stays, and re-adding it gives it a fresh month. Having resolved even once keeps
-a name — going quiet is a different fact. `-1` disables either.
+stays, and re-adding it gives it a fresh month. So is one that resolves fine
+while no probe has ever answered on it — see below. Having worked even once keeps
+a name; going quiet is a different fact. `-1` disables either.
 
 ## Rolling addresses
 
@@ -194,6 +195,24 @@ in full.
 Blank is time nobody asked: `unknown` draws grey rather than joining the
 red-green scale, and the percentage is the share of *measured* time the address
 answered.
+
+### Never a tracker, or a tracker that stopped
+
+144 of 276 names read `dead` while their DNS reads `ok`, 46 of them on AS13335
+alone. Almost all are parked domains that never were trackers, and lumping them
+in with a tracker that went down last week loses the more interesting half of
+the registry.
+
+The two are told apart by the last probe that answered: `last_live_at`, derived
+from the probe history the pass already writes, and NULL on a name nothing has
+ever answered on. The tracker list says `never answered` where it would
+otherwise say `silent 30d+`, and the dashboard counts both classes.
+
+It feeds the retirement policy too. A name that resolves and has never once
+answered is retired after the same `--retire-after` (30 days), measured on how
+long its dead verdicts have stood rather than on how long it has been listed. A
+name that answered once is never retired for going quiet, and an `unknown`
+verdict holds retirement off: unknown says less than dead.
 
 ### How long has that been true
 

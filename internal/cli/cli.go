@@ -171,7 +171,7 @@ func (rf *resolverFlags) register(fs *flag.FlagSet) {
 	fs.IntVar(&rf.backoff, "backoff-after", 24,
 		"consecutive passes without an address before a name is only retried daily (-1 to keep every name hourly)")
 	fs.DurationVar(&rf.retire, "retire-after", 30*24*time.Hour,
-		"how long a name that has never once resolved is kept in collection, history intact (-1 to keep it forever)")
+		"how long a name that has never resolved, or never answered a probe, is kept in collection, history intact (-1 to keep it forever)")
 }
 
 // splitList turns a comma-separated flag value into a slice, dropping blanks.

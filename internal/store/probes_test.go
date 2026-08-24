@@ -316,6 +316,70 @@ func TestReachSummaryCountsNeverProbedAsUnknown(t *testing.T) {
 	}
 }
 
+// "Never once answered" and "answered before, then stopped" are different facts
+// about a name, and only the last answer tells them apart. It survives the
+// verdict going dead, which is the whole point of keeping it.
+func TestSetReachDatesTheLastAnswer(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	answers, _ := newTrackerWithEndpoint(t, s, "answers.example.com")
+	silent, _ := newTrackerWithEndpoint(t, s, "silent.example.com")
+
+	if _, _, err := s.SetReach(ctx, answers, ReachLive, "up", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetReach(ctx, answers, ReachDead, "down", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetReach(ctx, silent, ReachDead, "down", now); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.TrackerByName(ctx, "answers.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastLiveAt == nil || !got.LastLiveAt.Equal(now) {
+		t.Errorf("last_live_at = %v, want the live pass at %v", got.LastLiveAt, now)
+	}
+	if got, _ = s.TrackerByName(ctx, "silent.example.com"); got.LastLiveAt != nil {
+		t.Errorf("last_live_at = %v on a name that never answered, want nil", got.LastLiveAt)
+	}
+}
+
+// 144 of 276 names read dead with DNS reading ok, and almost none of them were
+// ever trackers. The dashboard says which is which.
+func TestStatsSplitsDeadNamesByWhetherTheyEverAnswered(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	quiet, _ := newTrackerWithEndpoint(t, s, "quiet.example.com")
+	if _, _, err := s.SetReach(ctx, quiet, ReachLive, "up", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetReach(ctx, quiet, ReachDead, "down", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"parked.example.com", "alsoparked.example.com"} {
+		id, _ := newTrackerWithEndpoint(t, s, name)
+		if _, _, err := s.SetReach(ctx, id, ReachDead, "down", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := s.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.NeverAnswered != 2 || st.WentQuiet != 1 {
+		t.Errorf("stats = %d never answered, %d went quiet; want 2 and 1",
+			st.NeverAnswered, st.WentQuiet)
+	}
+}
+
 func TestSoftwareStats(t *testing.T) {
 	s := testStore(t)
 	ctx := t.Context()

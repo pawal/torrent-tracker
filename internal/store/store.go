@@ -100,6 +100,9 @@ type Tracker struct {
 	// FailingSince dates that streak. Both reset the moment the name resolves.
 	ResolveFails int        `json:"resolve_fails,omitempty"`
 	FailingSince *time.Time `json:"failing_since,omitempty"`
+	// LastLiveAt dates the last probe that answered. Nil on a name no probe has
+	// ever answered, which is a different thing from one that went quiet.
+	LastLiveAt *time.Time `json:"last_live_at,omitempty"`
 }
 
 // IPRecord is one contiguous period during which an address was observed.
@@ -142,16 +145,21 @@ type Run struct {
 
 // Stats summarises the database for the dashboard.
 type Stats struct {
-	Trackers        int            `json:"trackers"`
-	EnabledTrackers int            `json:"enabled_trackers"`
-	ActiveIPs       int            `json:"active_ips"`
-	ActiveIPRecords int            `json:"active_ip_records"`
-	TotalIPs        int            `json:"total_ips"`
-	Changes         int            `json:"changes"`
-	Parked          int            `json:"parked"`
-	ByStatus        map[Status]int `json:"by_status"`
-	ByReach         map[Reach]int  `json:"by_reach"`
-	LastRun         *Run           `json:"last_run"`
+	Trackers        int `json:"trackers"`
+	EnabledTrackers int `json:"enabled_trackers"`
+	ActiveIPs       int `json:"active_ips"`
+	ActiveIPRecords int `json:"active_ip_records"`
+	TotalIPs        int `json:"total_ips"`
+	Changes         int `json:"changes"`
+	Parked          int `json:"parked"`
+	// NeverAnswered is the enabled names that resolve and have never once
+	// answered a probe, WentQuiet the dead ones that answered before. Both are
+	// dead now; only the second was ever a tracker.
+	NeverAnswered int            `json:"never_answered"`
+	WentQuiet     int            `json:"went_quiet"`
+	ByStatus      map[Status]int `json:"by_status"`
+	ByReach       map[Reach]int  `json:"by_reach"`
+	LastRun       *Run           `json:"last_run"`
 }
 
 // Store is a handle on the SQLite database.
@@ -272,6 +280,11 @@ func Family(ip string) int {
 // counts once. The per-tracker count is reported separately, as pairs.
 const activeIPCount = `SELECT COUNT(DISTINCT ip) FROM ip_records WHERE active = 1 AND is_prefix = 0`
 
+// deadTrackers counts the enabled names nothing answers on, which the last
+// answer then splits into never a tracker and gone quiet.
+const deadTrackers = `SELECT COUNT(*) FROM trackers
+	WHERE enabled = 1 AND control = 0 AND reach = 'dead'`
+
 // Stats gathers dashboard counters.
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	st := Stats{ByStatus: map[Status]int{}}
@@ -283,9 +296,12 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 		       (SELECT COUNT(*) FROM ip_records WHERE active = 1 AND is_prefix = 0),
 		       (SELECT COUNT(DISTINCT ip) FROM ip_records WHERE is_prefix = 0),
 		       (SELECT COUNT(*) FROM changes),
-		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 AND parked = 1)`)
+		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 AND parked = 1),
+		       (`+deadTrackers+` AND last_live_at IS NULL),
+		       (`+deadTrackers+` AND last_live_at IS NOT NULL)`)
 	if err := row.Scan(&st.Trackers, &st.EnabledTrackers, &st.ActiveIPs,
-		&st.ActiveIPRecords, &st.TotalIPs, &st.Changes, &st.Parked); err != nil {
+		&st.ActiveIPRecords, &st.TotalIPs, &st.Changes, &st.Parked,
+		&st.NeverAnswered, &st.WentQuiet); err != nil {
 		return st, err
 	}
 

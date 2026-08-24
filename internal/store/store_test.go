@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,6 +235,121 @@ func TestRetireStale(t *testing.T) {
 	again, err := s.RetireStale(ctx, now.Add(-month), now)
 	if err != nil || len(again) != 0 {
 		t.Errorf("second pass retired %+v (err %v), want nothing", again, err)
+	}
+}
+
+// Half the registry resolves fine and has never once answered a probe: parked
+// domains that never were trackers. They are better retirement candidates than
+// a name that answered last week and went quiet, which is kept.
+func TestRetireStaleRetiresNamesThatNeverAnswered(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	month := 30 * 24 * time.Hour
+
+	dead := func(name string, since time.Time) int64 {
+		t.Helper()
+		trackerID, endpointID := withEndpoint(t, s, name, base, "http", 80)
+		apply(t, s, trackerID, base, adds("1.2.3.4")...)
+		probeRun(t, s, endpointID, since, verdict("1.2.3.4", ProbeDead, since))
+		if _, _, err := s.SetReach(ctx, trackerID, ReachDead, "nothing answers", since); err != nil {
+			t.Fatal(err)
+		}
+		return trackerID
+	}
+
+	parked := dead("parked.example.com", base)
+	dead("recent.example.com", base.Add(month-time.Hour)) // dead, but not for a month
+	quiet, quietEndpoint := withEndpoint(t, s, "quiet.example.com", base, "http", 80)
+	apply(t, s, quiet, base, adds("1.2.3.4")...)
+	probeRun(t, s, quietEndpoint, base, verdict("1.2.3.4", ProbeLive, base))
+	if _, _, err := s.SetReach(ctx, quiet, ReachLive, "answers", base); err != nil {
+		t.Fatal(err)
+	}
+	probeRun(t, s, quietEndpoint, base.Add(time.Hour), verdict("1.2.3.4", ProbeDead, base.Add(time.Hour)))
+	if _, _, err := s.SetReach(ctx, quiet, ReachDead, "nothing answers", base.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	now := base.Add(month + time.Hour)
+	retired, err := s.RetireStale(ctx, now.Add(-month), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retired) != 1 || retired[0].Name != "parked.example.com" {
+		t.Fatalf("retired = %+v, want only parked.example.com", retired)
+	}
+	if retired[0].Reason != RetireNeverAnswered {
+		t.Errorf("reason = %q, want %q", retired[0].Reason, RetireNeverAnswered)
+	}
+	changes, _ := s.ChangesFor(ctx, parked, 10)
+	if len(changes) == 0 || !strings.Contains(changes[0].Detail, "no probe has answered") {
+		t.Errorf("retirement detail = %+v, want it to say no probe answered", changes)
+	}
+
+	// An answer on record keeps a name whatever it does later.
+	if got, _ := s.TrackerByName(ctx, "quiet.example.com"); !got.Enabled {
+		t.Error("a name that answered once was retired for going quiet")
+	}
+}
+
+// A name nothing could be probed on reads unknown, and unknown says less than
+// dead: it is not evidence for retiring anything.
+func TestRetireStaleKeepsUnprobedNames(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	month := 30 * 24 * time.Hour
+
+	trackerID, endpointID := withEndpoint(t, s, "silent.example.com", base, "http", 80)
+	apply(t, s, trackerID, base, adds("1.2.3.4")...)
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeUnknown, base))
+	if _, _, err := s.SetReach(ctx, trackerID, ReachUnknown, "no verdict", base); err != nil {
+		t.Fatal(err)
+	}
+
+	now := base.Add(month + time.Hour)
+	retired, err := s.RetireStale(ctx, now.Add(-month), now)
+	if err != nil || len(retired) != 0 {
+		t.Errorf("retired %+v (err %v), want nothing", retired, err)
+	}
+}
+
+// The upgrade derives the last answer from the probe history rather than
+// starting every name blank. Blank would read as "never answered" across the
+// whole registry, and retire the working half of it a month later.
+func TestMigrationBackfillsTheLastAnswer(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	trackerID, endpointID := withEndpoint(t, s, "quiet.example.com", base, "http", 80)
+	probeRun(t, s, endpointID, base, verdict("1.2.3.4", ProbeLive, base))
+	probeRun(t, s, endpointID, base.Add(time.Hour), verdict("1.2.3.4", ProbeDead, base.Add(time.Hour)))
+	if _, err := s.db.ExecContext(ctx, `UPDATE trackers SET last_live_at = NULL WHERE id = ?`, trackerID); err != nil {
+		t.Fatal(err)
+	}
+
+	sql, err := migrationFS.ReadFile("migrations/0014_last_live.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Everything after the ALTER, which a second run cannot repeat.
+	_, backfill, ok := strings.Cut(string(sql), ";")
+	if !ok {
+		t.Fatal("0014 has nothing after the ALTER")
+	}
+	if _, err := s.db.ExecContext(ctx, backfill); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.TrackerByName(ctx, "quiet.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastLiveAt == nil {
+		t.Fatal("last_live_at is nil on a name whose history holds a live stretch")
+	}
+	if !got.LastLiveAt.Equal(base.Add(time.Hour)) {
+		t.Errorf("last_live_at = %v, want the end of the live stretch %v",
+			got.LastLiveAt, base.Add(time.Hour))
 	}
 }
 

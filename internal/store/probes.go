@@ -403,9 +403,17 @@ func (s *Store) SetReach(ctx context.Context, trackerID int64, reach Reach, deta
 	if err := tx.QueryRowContext(ctx, `SELECT reach FROM trackers WHERE id = ?`, trackerID).Scan(&prev); err != nil {
 		return "", false, err
 	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE trackers SET reach = ?, reach_checked_at = ? WHERE id = ?`,
-		reach, fmtTime(now), trackerID); err != nil {
+	// A pass that answered anywhere dates the answer; one that did not leaves
+	// the last one standing.
+	var answered any
+	if reach.Answers() {
+		answered = fmtTime(now)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE trackers SET reach = ?, reach_checked_at = ?,
+		       last_live_at = COALESCE(?, last_live_at)
+		 WHERE id = ?`,
+		reach, fmtTime(now), answered, trackerID); err != nil {
 		return prev, false, err
 	}
 	kind := ReachChange(prev, reach)

@@ -74,6 +74,10 @@ type Probe struct {
 	Signature string      `json:"signature,omitempty"`
 	Kind      prober.Kind `json:"signature_kind,omitempty"`
 	Server    string      `json:"server,omitempty"`
+	// Software is the implementation the fingerprint names, filled in on read
+	// from a table in code rather than stored: see prober.Software. Empty for
+	// the many signatures that group trackers without naming one.
+	Software string `json:"software,omitempty"`
 }
 
 // RollUp reduces per-address probe results to one verdict for the name.
@@ -198,6 +202,7 @@ func scanProbe(sc scanner) (Probe, error) {
 		&p.Server); err != nil {
 		return p, err
 	}
+	p.Software = softwareName(p.Signature, p.Kind, p.Server)
 	var err error
 	if p.Since, err = parseTime(since); err != nil {
 		return p, err
@@ -444,9 +449,12 @@ type EndpointCoverage struct {
 	WithEndpoints int `json:"with_endpoints"`
 	Endpoints     int `json:"endpoints"`
 	Probed        int `json:"probed"`
-	// Identified is how many trackers gave up a software signature. Far fewer
-	// than Probed: UDP discloses nothing, and a dead endpoint says nothing.
-	Identified int `json:"identified"`
+	// Fingerprinted is how many trackers gave up a signature of any sort, and
+	// Named how many of those left one that can be attributed to an
+	// implementation. Both are far below Probed: UDP discloses nothing, a dead
+	// endpoint says nothing, and most fingerprints name nobody.
+	Fingerprinted int `json:"fingerprinted"`
+	Named         int `json:"named"`
 	// NeverResolved is how many have never had an address at all. They read
 	// unknown for a different reason than the ones missing an endpoint.
 	NeverResolved int `json:"never_resolved"`
@@ -466,23 +474,62 @@ func (s *Store) ProbeCoverage(ctx context.Context) (EndpointCoverage, error) {
 		         WHERE t.enabled = 1 AND t.control = 0 AND e.retired_at IS NULL),
 		       (SELECT COUNT(*) FROM trackers
 		         WHERE enabled = 1 AND control = 0 AND reach_checked_at IS NOT NULL),
-		       (SELECT COUNT(DISTINCT e.tracker_id) FROM probes p
-		          JOIN endpoints e ON e.id = p.endpoint_id
-		          JOIN trackers t ON t.id = e.tracker_id
-		         WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''),
 		       (SELECT COUNT(*) FROM trackers t
 		         WHERE t.enabled = 1 AND t.control = 0
 		           AND NOT EXISTS (SELECT 1 FROM ip_records r WHERE r.tracker_id = t.id))`).
-		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed, &c.Identified, &c.NeverResolved)
+		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed, &c.NeverResolved)
+	if err != nil {
+		return c, err
+	}
+	c.Fingerprinted, c.Named, err = s.fingerprintCounts(ctx)
 	return c, err
+}
+
+// fingerprintCounts counts the trackers that disclosed a fingerprint and, of
+// them, the ones it names. Attribution lives in code, not in a column, so SQL
+// can count the first but not the second.
+func (s *Store) fingerprintCounts(ctx context.Context) (fingerprinted, named int, err error) {
+	seen, attributed := map[int64]bool{}, map[int64]bool{}
+	err = s.eachRow(ctx, `
+		SELECT DISTINCT e.tracker_id, p.signature, p.signature_kind, p.server
+		FROM probes p
+		JOIN endpoints e ON e.id = p.endpoint_id
+		JOIN trackers t ON t.id = e.tracker_id
+		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''`, nil, func(sc scanner) error {
+		var (
+			trackerID         int64
+			sig, kind, server string
+		)
+		if err := sc.Scan(&trackerID, &sig, &kind, &server); err != nil {
+			return err
+		}
+		seen[trackerID] = true
+		if softwareName(sig, prober.Kind(kind), server) != "" {
+			attributed[trackerID] = true
+		}
+		return nil
+	})
+	return len(seen), len(attributed), err
+}
+
+// softwareName is the implementation behind one probe: what its signature names,
+// or the Server header when the tracker wrote it rather than a front end.
+func softwareName(sig string, kind prober.Kind, server string) string {
+	if name := prober.Software(groupSignature(sig, kind)); name != "" {
+		return name
+	}
+	return prober.ServerSoftware(server)
 }
 
 // SoftwareStat is one cluster of trackers that answered alike.
 type SoftwareStat struct {
 	Signature string      `json:"signature"`
 	Kind      prober.Kind `json:"kind,omitempty"`
-	Trackers  int         `json:"trackers"`
-	Endpoints int         `json:"endpoints"`
+	// Name is the implementation the signature names, empty when it only
+	// gathers trackers that answer alike.
+	Name      string `json:"name,omitempty"`
+	Trackers  int    `json:"trackers"`
+	Endpoints int    `json:"endpoints"`
 	// Variants are the raw signatures folded into the cluster, present only
 	// where grouping dropped keys to get there.
 	Variants []string `json:"variants,omitempty"`
@@ -552,10 +599,13 @@ func (s *Store) SoftwareStats(ctx context.Context, limit int) ([]SoftwareStat, e
 		c := groups[key]
 		if c == nil {
 			c = &cluster{
-				SoftwareStat: SoftwareStat{Signature: grouped, Kind: prober.Kind(kind)},
-				trackers:     map[int64]bool{},
-				endpoints:    map[int64]bool{},
-				variants:     map[string]bool{},
+				SoftwareStat: SoftwareStat{
+					Signature: grouped, Kind: prober.Kind(kind),
+					Name: prober.Software(grouped),
+				},
+				trackers:  map[int64]bool{},
+				endpoints: map[int64]bool{},
+				variants:  map[string]bool{},
 			}
 			groups[key] = c
 		}

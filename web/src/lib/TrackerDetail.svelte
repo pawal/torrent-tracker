@@ -1,6 +1,6 @@
 <script>
   import {
-    getTracker, describe, fmtTime, fmtDate, describeNetwork, describeSoftware, flag,
+    getTracker, describe, fmtTime, fmtDate, describeNetwork, flag,
     probeLanes, resolutionLane, addressLanes, axisTicks, fmtPercent,
   } from './api.js'
 
@@ -44,9 +44,19 @@
 
   // Every endpoint of a healthy tracker reports the same software, so it is
   // stated once. Disagreement is the finding, and only then goes per row.
-  const software = $derived(unique((data?.probes ?? []).map((p) => p.signature)))
-  const servers = $derived(unique((data?.probes ?? []).map((p) => p.server)))
+  const software = $derived(unique((data?.probes ?? []).map((p) => p.software || p.signature)))
+  const signatures = $derived(unique((data?.probes ?? []).map((p) => p.signature)))
   const mixedSoftware = $derived(software.length > 1)
+  // A Server header the tracker wrote is already the software pill; the rest
+  // name the front end in front of it.
+  const servers = $derived(
+    unique(
+      (data?.probes ?? []).map((p) => {
+        const server = p.server ?? ''
+        return p.software && server.startsWith(p.software) ? '' : server
+      }),
+    ),
+  )
 
   $effect(() => {
     let cancelled = false
@@ -132,8 +142,8 @@
     <div class="detail-head">
       <h2>Tracker protocol</h2>
       {#if !mixedSoftware && software[0]}
-        <span class="pill guess" title="inferred from the reply: {software[0]}">
-          {describeSoftware(software[0])}
+        <span class="pill guess" title="inferred from the reply: {signatures[0]}">
+          {software[0]}
         </span>
       {/if}
       {#each servers as s (s)}
@@ -188,7 +198,7 @@
                   <td><span class="pill {p.result}">{p.result}</span></td>
                   {#if mixedSoftware}
                     <td class="muted" title={p.signature}>
-                      {describeSoftware(p.signature) || '-'}
+                      {p.software || p.signature || '-'}
                     </td>
                   {/if}
                   <td class="muted">

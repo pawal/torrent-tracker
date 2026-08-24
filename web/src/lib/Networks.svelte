@@ -1,7 +1,6 @@
 <script>
   import {
     getNetworks,
-    describeSoftware,
     describeEvidence,
     softwareTitle,
     describeNetwork,
@@ -73,10 +72,14 @@
     <div class="card">
       <h2>By tracker software</h2>
       <p class="sub">
-        Identified for {data.probes.identified} of {data.probes.trackers} trackers. A failure
-        text is a literal from an implementation and names it; a reply shape is only the keys
-        the answer carried, grouped past the ones that come and go with the peers a tracker
-        has to report. UDP endpoints disclose nothing, so this covers the HTTP ones.
+        Fingerprinted for {data.probes.fingerprinted} of {data.probes.trackers} trackers, and
+        {data.probes.named} of those left a fingerprint that names the software. A failure text
+        is a literal from an implementation, but the generic ones were copied between projects,
+        so most only gather trackers that answer alike; a reply shape is only the keys the
+        answer carried, grouped past the ones that come and go with the peers a tracker has to
+        report. The <code>Server</code> header is not counted: it names the front end, and is
+        <code>cloudflare</code> on most live probes. UDP endpoints disclose nothing, so this
+        covers the HTTP ones.
       </p>
       <div class="scroll">
         <table>
@@ -86,7 +89,7 @@
           <tbody>
             {#each data.software as s (s.kind + s.signature)}
               <tr>
-                <td title={softwareTitle(s)}>{describeSoftware(s.signature)}</td>
+                <td title={softwareTitle(s)}>{s.name || s.signature}</td>
                 <td>
                   {#if describeEvidence(s.kind)}
                     <span class="pill guess">{describeEvidence(s.kind)}</span>

@@ -357,8 +357,52 @@ func TestSoftwareStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cov.Identified != 3 || cov.Trackers != 4 {
-		t.Errorf("coverage = %d identified of %d, want 3 of 4", cov.Identified, cov.Trackers)
+	if cov.Fingerprinted != 3 || cov.Trackers != 4 {
+		t.Errorf("coverage = %d fingerprinted of %d, want 3 of 4",
+			cov.Fingerprinted, cov.Trackers)
+	}
+	// Only opentracker's wording can be put a name to; "missing info_hash"
+	// groups replies that look alike and names nobody.
+	if cov.Named != 2 {
+		t.Errorf("named = %d, want 2", cov.Named)
+	}
+	if got[0].Name != "opentracker" || got[1].Name != "" {
+		t.Errorf("names = %q and %q, want opentracker and none", got[0].Name, got[1].Name)
+	}
+}
+
+// The live registry reads "identified" as any fingerprint at all, which is
+// mostly the CDN in front of the tracker: the top signature is a failure text
+// 24 trackers share, and Server is cloudflare on 88 live probes. Neither names
+// software, and only a header the tracker itself wrote does.
+func TestProbeCoverageSeparatesNamedSoftwareFromFingerprints(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	for _, tc := range []struct {
+		name, sig, server string
+		kind              prober.Kind
+	}{
+		{"named.example.com", "no info_hash parameter supplied", "cloudflare", prober.KindFailure},
+		{"generic.example.com", "Your client forgot to send your torrent's info_hash", "cloudflare", prober.KindFailure},
+		{"header.example.com", "files", "Ocelot 1.0", prober.KindShape},
+	} {
+		_, endpointID := newTrackerWithEndpoint(t, s, tc.name)
+		p := verdict("1.2.3.4", ProbeLive, now)
+		p.Signature, p.Kind, p.Server = tc.sig, tc.kind, tc.server
+		probeRun(t, s, endpointID, now, p)
+	}
+
+	cov, err := s.ProbeCoverage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cov.Fingerprinted != 3 {
+		t.Errorf("fingerprinted = %d, want 3", cov.Fingerprinted)
+	}
+	if cov.Named != 2 {
+		t.Errorf("named = %d, want 2: the generic failure text names nobody", cov.Named)
 	}
 }
 

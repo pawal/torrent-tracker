@@ -229,22 +229,6 @@ export function describeNetwork(n) {
   return parts.join(' ')
 }
 
-// Signatures we can put a name to. Kept out of the database because naming a
-// cluster is a guess: revise this and every stored row is reinterpreted.
-// Anything absent renders as its raw signature, which still groups correctly.
-const software = {
-  'no info_hash parameter supplied': 'opentracker',
-  // jpopsuki.eu answers this and sets "Server: Ocelot 1.0" — the tracker naming
-  // itself in the one header a front end had not overwritten.
-  'Malformed announce': 'Ocelot',
-}
-
-/** Name the tracker software behind a signature, or show the signature itself. */
-export function describeSoftware(signature) {
-  if (!signature) return ''
-  return software[signature] ?? signature
-}
-
 // What a row rests on. A failure text is a literal from some tracker's source
 // and points at one implementation; a reply shape is only the keys the answer
 // carried, which gathers lookalikes but names nothing.

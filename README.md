@@ -290,10 +290,17 @@ group with their conditional keys dropped (`peers`, `peers6`, `downloaded`,
 ten rows into one, while failure texts group verbatim. Raw signatures are kept
 as the cluster's variants, so a fold can be inspected.
 
-**Names are applied at render time**, since a guess written into history cannot
-be corrected. The signature is stored and the mapping to a name like
-`opentracker` lives in `software` in `web/src/lib/api.js`: extend it there and
-every stored row is reinterpreted. Anything unnamed displays as its signature.
+**Names are applied on read**, since a guess written into history cannot be
+corrected. The signature is stored and the mapping to a name like `opentracker`
+lives in `software` in `internal/prober/software.go`: extend it there and every
+stored row is reinterpreted. Anything unnamed displays as its signature.
+
+**A fingerprint is not the same as a name**, so the networks page reports two
+numbers. Most signatures only gather trackers that answer alike: the commonest
+one, `Your client forgot to send your torrent's info_hash`, is a literal 24
+trackers share because projects copied each other's wording. It groups them
+without saying what any of them runs, so it counts as fingerprinted and not as
+named.
 
 **A shape-only tracker is asked once more**, for an announce with the
 `info_hash` left out, since implementations write their own words when they
@@ -306,7 +313,10 @@ fingerprint from a dictionary cut off mid-way. And every scrape reply opens with
 `files`, so a shape amounting to nothing more asks announce as well.
 
 The `Server` header is captured alongside but names the front end: nginx and
-Cloudflare overwrite whatever the tracker set.
+Cloudflare overwrite whatever the tracker set, and `cloudflare` alone is on 88 of
+the live probes. So it identifies nothing unless it names a tracker we recognise
+— jpopsuki.eu answers with `Server: Ocelot 1.0`, the tracker reaching the one
+header no front end had taken. Anything else shows as the front end it is.
 
 Software shows on a tracker's page, per endpoint only when they disagree, and
 aggregates under "By tracker software" on the networks page. It is an inference,

@@ -5,6 +5,7 @@
   import Networks from './lib/Networks.svelte'
   import NotFound from './lib/NotFound.svelte'
   import ThemeToggle from './lib/ThemeToggle.svelte'
+  import Logo from './lib/Logo.svelte'
   import { getVersion } from './lib/api.js'
   import { parseRoute, currentLocation, interceptLinks } from './lib/router.js'
   import { applyMeta } from './lib/meta.js'
@@ -48,7 +49,7 @@
 
 <header class="top">
   <div class="brand">
-    <h1>torrent-tracker</h1>
+    <h1><Logo /></h1>
     <span class="tagline">tracker DNS history</span>
   </div>
   <div class="header-controls">

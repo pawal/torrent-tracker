@@ -34,6 +34,48 @@
     <meta name="twitter:title" content="torrent-tracker — BitTorrent tracker DNS history" />
     <meta name="twitter:description" content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change." />
     <meta name="twitter:image" content="https://tracker.evilbit.de/og-image.png" />
+
+    <!-- trackerd renders every page into the body as plain HTML too, for text
+         browsers and crawlers. A browser that runs the bundle marks the document
+         and the rule below takes that copy away; lynx runs neither and keeps it. -->
+    <script>
+      document.documentElement.classList.add('js')
+      // A bundle that never loads would otherwise leave the empty div and no
+      // page at all. Capture: a failed script tag fires no bubbling event.
+      addEventListener(
+        'error',
+        (e) => {
+          if (e.target?.tagName === 'SCRIPT') document.documentElement.classList.remove('js')
+        },
+        true,
+      )
+    </script>
+    <style>
+      .js #fallback {
+        display: none;
+      }
+      #fallback {
+        margin: 0 auto;
+        max-width: 60rem;
+        padding: 1rem;
+        font-family: system-ui, sans-serif;
+        line-height: 1.5;
+      }
+      #fallback table {
+        border-collapse: collapse;
+      }
+      #fallback td,
+      #fallback th {
+        border-bottom: 1px solid #ccc;
+        padding: 0.2rem 0.6rem 0.2rem 0;
+        text-align: left;
+        vertical-align: top;
+      }
+      #fallback th[scope='row'] {
+        font-weight: 600;
+        padding-right: 1.5rem;
+      }
+    </style>
     <script type="module" crossorigin src="/assets/index-CiWsjPij.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-D2kzj8Yk.css">
   </head>

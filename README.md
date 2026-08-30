@@ -601,6 +601,35 @@ trackerd serve --base-url https://tracker.example.com
 Without it the daemon reads `Host` and `X-Forwarded-Proto`, which is right only
 if the proxy sets them.
 
+## Without JavaScript
+
+The app draws the page, so a text browser used to be handed an empty `<div>`.
+Every page is now rendered server-side too:
+
+```sh
+lynx https://tracker.evilbit.de/t/tracker.opentrackr.org
+curl https://tracker.evilbit.de/networks
+```
+
+`Accept` decides: lynx, w3m and crawlers name `text/html` and get semantic HTML
+inside the shell, curl and wget send `*/*` and get plain text padded to line up
+in a terminal. `?format=txt` asks for text outright. A browser that runs the
+bundle marks the document, and a rule in the shell drops the rendered copy
+before it paints — and puts it back if the bundle fails to load.
+
+| Page | Rendered |
+| --- | --- |
+| `/` | the counters, the resolution rollup and the last 50 changes |
+| `/trackers` | every name with its DNS status, whether it answers and its ASes |
+| `/networks` | reachability, software, shared addresses, ASes, RIRs, countries |
+| `/t/{name}` | status, per-address probe verdicts, address intervals, change log |
+
+**The present state and the feed, never the windowed history.** A month-wide
+scan a page reads as nothing in text, so uptime and the intervals stay in
+`/api/trackers/{name}` and the list drops addresses, which are on each name's
+own page. `doc.go` holds the model and both renderers, `fallback.go` a document
+per route — mirroring its Svelte component as `meta.go` mirrors `meta.js`.
+
 ## Running as a service
 
 `deploy/trackerd.service` is a systemd unit for Debian 13. It runs the daemon as
@@ -701,7 +730,7 @@ internal/bep34/        BEP 34 tracker preferences published in TXT records
 internal/enrich/       AS/RIR/geo providers: Cymru, RDAP, MaxMind
 internal/prober/       BEP 15 and BEP 48 checks, software fingerprinting
 internal/collector/    scheduler, the pure diff engine, enrichment and probe runners
-internal/api/          HTTP handlers, page routing, metadata, sitemap
+internal/api/          HTTP handlers, page routing, metadata, sitemap, no-JS rendering
 internal/trackerlist/  announce-URL parsing and list fetching
 internal/cli/          subcommands
 web/                   Svelte 5 + Vite frontend, embedded via go:embed

@@ -38,7 +38,8 @@ func testServer(t *testing.T) (http.Handler, *store.Store) {
 		Store: st,
 		Log:   discard(),
 		Static: fstest.MapFS{
-			"index.html":    &fstest.MapFile{Data: []byte("<!doctype html><title>app</title>")},
+			"index.html": &fstest.MapFile{Data: []byte(
+				"<!doctype html><title>app</title></head><body><div id=\"app\"></div></body>")},
 			"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
 			"favicon.ico":   &fstest.MapFile{Data: []byte("\x00\x00\x01\x00\x01\x00")},
 		},
@@ -433,7 +434,7 @@ func TestStaticSPAFallback(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deep link = %d, want 200 via the index fallback", rec.Code)
 	}
-	if body := rec.Body.String(); body != "<!doctype html><title>app</title>" {
+	if body := rec.Body.String(); !strings.Contains(body, `<div id="app">`) {
 		t.Errorf("body = %q, want index.html", body)
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
@@ -481,7 +482,7 @@ func TestUnknownPageIs404(t *testing.T) {
 		}
 		// Still the shell, so the 404 is a rendered page rather than a bare
 		// status the browser has to style itself.
-		if body := rec.Body.String(); body != "<!doctype html><title>app</title>" {
+		if body := rec.Body.String(); !strings.Contains(body, `<div id="app">`) {
 			t.Errorf("GET %s body = %q, want the shell", path, body)
 		}
 	}

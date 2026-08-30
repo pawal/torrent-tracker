@@ -104,3 +104,37 @@ func contains(xs []int, want int) bool {
 	}
 	return false
 }
+
+// trackerd renders every page into the shell's body for text browsers and
+// crawlers, and the shell takes it away again once the bundle has run. Both
+// halves live in index.html, where a careless edit or a Vite upgrade that
+// starts stripping inline tags would drop them silently: the app would look
+// fine and lynx would see two copies of every page.
+func TestShellHidesTheRenderedBodyOnceMounted(t *testing.T) {
+	dist, err := Dist()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shell := string(b)
+	markers := []string{
+		"classList.add('js')", ".js #fallback", "display: none", `<div id="app">`,
+		// Without the listener a bundle that 404s leaves the empty div and no
+		// page at all, which is the case the rendered body exists to cover.
+		"classList.remove('js')", "'error'",
+	}
+	for _, want := range markers {
+		if !bytes.Contains(b, []byte(want)) {
+			t.Errorf("index.html is missing %q:\n%s", want, shell)
+		}
+	}
+	// The body is substituted in ahead of this tag, so a shell without one
+	// serves the empty div it always did.
+	if !bytes.Contains(b, []byte("</body>")) {
+		t.Error("index.html has no </body> for the rendered page to go before")
+	}
+}

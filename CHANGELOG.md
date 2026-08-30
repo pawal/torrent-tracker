@@ -3,6 +3,15 @@
 Notable changes per release. Versions follow [semantic
 versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Every page rendered server-side for clients that run no JS: semantic HTML in
+  the shell for lynx and crawlers, plain text for curl.
+- `?format=txt` on any page; otherwise an `Accept` naming `text/html` decides.
+- Both forms carry the present state and the feed, not the windowed timelines.
+
 ## 1.1.0 — 2026-08-30
 
 The UI moved off `#/` fragments, so every page is a real URL that crawlers and

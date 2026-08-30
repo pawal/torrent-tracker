@@ -55,9 +55,19 @@ func (s *Server) shell() ([]byte, error) {
 	return s.shellHTML, s.shellErr
 }
 
-// servePage writes the shell carrying this page's metadata, so a crawler that
-// does not run JS still sees it.
+// servePage writes the page: plain text where the client asked for anything
+// but HTML, else the shell carrying this page's metadata and a rendered body,
+// so a crawler or a text browser sees more than an empty div.
 func (s *Server) servePage(w http.ResponseWriter, r *http.Request, status int, path, country string, t *store.Tracker) {
+	page := s.fallbackDoc(r.Context(), status, path, country, t)
+	if wantsText(r) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(status)
+		w.Write(renderDocText(page))
+		return
+	}
+
 	shell, err := s.shell()
 	if err != nil {
 		s.serverError(w, err)
@@ -76,6 +86,7 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request, status int, p
 		URL:         base + loc + canonicalQuery(country),
 		Image:       base + "/og-image.png",
 		NoIndex:     status != http.StatusOK,
+		Body:        renderDocHTML(page),
 	}
 	// A 404 describes nothing, so it carries no structured data either.
 	if !h.NoIndex {
@@ -88,6 +99,18 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request, status int, p
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(status)
 	w.Write(body)
+}
+
+// wantsText reports whether the client wants the page as plain text. curl,
+// wget and httpie send "Accept: */*" and never name text/html; lynx does name
+// it and gets the HTML. ?format=txt says so outright, for testing and for a
+// browser that wants the terminal form.
+func wantsText(r *http.Request) bool {
+	if f := r.URL.Query().Get("format"); f != "" {
+		return f == "txt" || f == "text"
+	}
+	accept := r.Header.Get("Accept")
+	return accept != "" && !strings.Contains(accept, "text/html")
 }
 
 // canonicalQuery keeps the one parameter that makes a different page.

@@ -30,6 +30,8 @@ type head struct {
 	URL         string
 	Image       string
 	NoIndex     bool
+	// LD is the page's JSON-LD, or nil for none.
+	LD []byte
 }
 
 // pageMeta is the title and description for a page. It mirrors pageMeta in
@@ -105,5 +107,12 @@ func renderShell(shell []byte, h head) []byte {
 	if h.NoIndex {
 		out = strings.Replace(out, robotsIndex, robotsNone, 1)
 	}
+	if len(h.LD) > 0 {
+		out = strings.Replace(out, headEnd,
+			`<script type="application/ld+json" id="ld-json">`+string(h.LD)+"</script>\n"+headEnd, 1)
+	}
 	return []byte(out)
 }
+
+// headEnd is where the JSON-LD goes.
+const headEnd = "</head>"

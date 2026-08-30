@@ -398,6 +398,18 @@ func (s *Store) ListTrackerViews(ctx context.Context, includeDisabled bool) ([]T
 }
 
 // TrackerByName looks up a single tracker.
+// EarliestTracker returns when the oldest tracker was added, or the zero time
+// on an empty database. It dates how far the history reaches back.
+func (s *Store) EarliestTracker(ctx context.Context) (time.Time, error) {
+	var at sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT MIN(created_at) FROM trackers WHERE control = 0`).Scan(&at)
+	if err != nil || !at.Valid || at.String == "" {
+		return time.Time{}, err
+	}
+	return parseTime(at.String)
+}
+
 func (s *Store) TrackerByName(ctx context.Context, name string) (Tracker, error) {
 	t, err := scanTracker(s.db.QueryRowContext(ctx,
 		`SELECT `+trackerColumns+` FROM trackers WHERE name = ?`, name))

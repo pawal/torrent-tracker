@@ -82,6 +82,15 @@ export function pageMeta(route, tracker = null) {
   }
 }
 
+// The shell's JSON-LD describes the page the server rendered, so it goes stale
+// the moment the client navigates. Crawlers fetch each URL fresh anyway.
+const servedPath =
+  typeof window === 'undefined' ? '' : window.location.pathname + window.location.search
+
+function dropStaleJSONLD(here) {
+  if (here !== servedPath) document.getElementById('ld-json')?.remove()
+}
+
 // Setters keyed by how each tag is found, so a missing one is simply skipped.
 const setters = [
   ['meta[name="description"]', 'content', (m) => m.description],
@@ -101,7 +110,9 @@ export function applyMeta(route, tracker = null, location = window.location) {
   }
 
   // Canonical and og:url are absolute, and name the page actually shown.
-  const url = location.origin + location.pathname + location.search
+  const here = location.pathname + location.search
+  const url = location.origin + here
+  dropStaleJSONLD(here)
   const canonical = document.head.querySelector('link[rel="canonical"]')
   document.head.querySelector('meta[property="og:url"]')?.setAttribute('content', url)
 

@@ -68,14 +68,20 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request, status int, p
 	if t != nil {
 		loc = trackerPrefix + url.PathEscape(t.Name)
 	}
+	base := s.baseURL(r)
 	title, desc := pageMeta(path, country, t)
-	body := renderShell(shell, head{
+	h := head{
 		Title:       title,
 		Description: desc,
-		URL:         s.baseURL(r) + loc + canonicalQuery(country),
-		Image:       s.baseURL(r) + "/og-image.png",
+		URL:         base + loc + canonicalQuery(country),
+		Image:       base + "/og-image.png",
 		NoIndex:     status != http.StatusOK,
-	})
+	}
+	// A 404 describes nothing, so it carries no structured data either.
+	if !h.NoIndex {
+		h.LD = s.jsonLD(r.Context(), base, path, country, t)
+	}
+	body := renderShell(shell, h)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The shell names hashed assets, so it must never be held.

@@ -427,6 +427,33 @@ func (s *Store) RecentChanges(ctx context.Context, since time.Time, limit int) (
 	return s.queryChanges(ctx, q, args...)
 }
 
+// LastChangePerTracker returns when each tracker last changed, for callers
+// that need a modification date rather than a check date. Trackers with no
+// change recorded are absent.
+func (s *Store) LastChangePerTracker(ctx context.Context) (map[int64]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT tracker_id, MAX(observed_at) FROM changes GROUP BY tracker_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := map[int64]time.Time{}
+	for rows.Next() {
+		var id int64
+		var at string
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
+		}
+		t, err := parseTime(at)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = t
+	}
+	return out, rows.Err()
+}
+
 // ChangesFor returns the newest changes for one tracker.
 func (s *Store) ChangesFor(ctx context.Context, trackerID int64, limit int) ([]Change, error) {
 	if limit <= 0 || limit > 1000 {

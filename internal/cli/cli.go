@@ -218,6 +218,7 @@ func cmdServe(ctx context.Context, st *store.Store, log *slog.Logger, args []str
 	addr := fs.String("addr", ":8080", "listen address")
 	interval := fs.Duration("interval", time.Hour, "collection interval")
 	noCollect := fs.Bool("no-collect", false, "serve the API without running the collector")
+	baseURL := fs.String("base-url", "", "public origin for canonical links and the sitemap (default: from the request)")
 	var (
 		rf resolverFlags
 		ef enrichFlags
@@ -235,7 +236,7 @@ func cmdServe(ctx context.Context, st *store.Store, log *slog.Logger, args []str
 	if err != nil {
 		return fmt.Errorf("load embedded frontend: %w", err)
 	}
-	srv := &api.Server{Store: st, Log: log, Static: dist}
+	srv := &api.Server{Store: st, Log: log, Static: dist, BaseURL: *baseURL}
 
 	httpSrv := &http.Server{
 		Addr:              *addr,

@@ -99,3 +99,48 @@ func TestResolutionHistoryWindowAndPruning(t *testing.T) {
 		t.Errorf("%d intervals survived the prune, want 1", len(left))
 	}
 }
+
+// The sitemap dates each tracker page by its last change rather than its last
+// check, so this has to be the newest change and nothing else.
+func TestLastChangePerTracker(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	a := mustAdd(t, s, "a.example.com")
+	b := mustAdd(t, s, "b.example.com")
+	quiet := mustAdd(t, s, "quiet.example.com")
+
+	// a changes twice, an hour apart; b once, later. quiet only resolves, over
+	// and over, which is not a change.
+	must(t, s.ApplyPlan(ctx, a.ID, Plan{
+		Status: StatusOK, StatusChanged: true,
+		Actions: []Action{{IP: "1.2.3.4", Family: 4, Kind: ActionAdd}},
+	}, base))
+	must(t, s.ApplyPlan(ctx, a.ID, Plan{
+		Status:  StatusOK,
+		Actions: []Action{{IP: "1.2.3.5", Family: 4, Kind: ActionAdd}},
+	}, base.Add(time.Hour)))
+	must(t, s.ApplyPlan(ctx, b.ID, Plan{
+		Status: StatusOK, StatusChanged: true,
+		Actions: []Action{{IP: "5.6.7.8", Family: 4, Kind: ActionAdd}},
+	}, base.Add(5*time.Hour)))
+	for i := range 3 {
+		must(t, s.ApplyPlan(ctx, quiet.ID, Plan{Status: StatusNXDomain},
+			base.Add(time.Duration(i)*time.Hour)))
+	}
+
+	got, err := s.LastChangePerTracker(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[a.ID].Equal(base.Add(time.Hour)) {
+		t.Errorf("a = %s, want the later of its two changes (%s)", got[a.ID], base.Add(time.Hour))
+	}
+	if !got[b.ID].Equal(base.Add(5 * time.Hour)) {
+		t.Errorf("b = %s, want %s", got[b.ID], base.Add(5*time.Hour))
+	}
+	// Being added is a change; resolving three more times is not, so the date
+	// stays where it was rather than following the poll.
+	if !got[quiet.ID].Equal(base) {
+		t.Errorf("quiet = %s, want the moment it was added (%s)", got[quiet.ID], base)
+	}
+}

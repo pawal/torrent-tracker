@@ -24,6 +24,9 @@ type Server struct {
 	Log   *slog.Logger
 	// Static, if non-nil, is served at / as the frontend.
 	Static fs.FS
+	// BaseURL is the public origin, e.g. "https://tracker.example.com". Empty
+	// means derive it from each request.
+	BaseURL string
 
 	shellOnce sync.Once
 	shellHTML []byte
@@ -54,7 +57,10 @@ func (s *Server) Handler() http.Handler {
 		s.fail(w, http.StatusNotFound, "no such endpoint")
 	})
 
+	// Only with a frontend: they describe pages, and there are none without it.
 	if s.Static != nil {
+		mux.HandleFunc("GET /robots.txt", s.handleRobots)
+		mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
 		mux.Handle("GET /", s.spaHandler())
 	}
 	return logging(s.logger(), cors(mux))

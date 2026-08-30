@@ -111,6 +111,16 @@ func (s *Server) lookupTracker(ctx context.Context, name string) *store.Tracker 
 	return &t
 }
 
+// cacheFor is how long a static file may be held. Embedded files carry no
+// mtime, so this header is all a browser has to go on.
+func cacheFor(path string) string {
+	// Vite hashes these into their names; a change is a new URL.
+	if strings.HasPrefix(path, "/assets/") {
+		return "public, max-age=31536000, immutable"
+	}
+	return "public, max-age=86400"
+}
+
 // spaHandler serves the built frontend. A path the app renders gets the shell
 // and a 200; anything else gets the shell and a 404, so a deep link works and
 // a bad one is still told it is bad.
@@ -122,6 +132,7 @@ func (s *Server) spaHandler() http.Handler {
 		// A real file wins: the assets, robots.txt, the icons.
 		if p != "/" {
 			if st, err := fs.Stat(s.Static, strings.TrimPrefix(p, "/")); err == nil && !st.IsDir() {
+				w.Header().Set("Cache-Control", cacheFor(p))
 				files.ServeHTTP(w, r)
 				return
 			}

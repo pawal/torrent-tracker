@@ -3,7 +3,32 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>torrent-tracker</title>
+
+    <!-- Defaults for the dashboard. trackerd rewrites them per route before
+         serving, and meta.js keeps them current as the client navigates. -->
+    <title>torrent-tracker — BitTorrent tracker DNS history</title>
+    <meta
+      name="description"
+      content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change."
+    />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://tracker.evilbit.de/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="torrent-tracker" />
+    <meta property="og:title" content="torrent-tracker — BitTorrent tracker DNS history" />
+    <meta
+      property="og:description"
+      content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change."
+    />
+    <meta property="og:url" content="https://tracker.evilbit.de/" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="torrent-tracker — BitTorrent tracker DNS history" />
+    <meta
+      name="twitter:description"
+      content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change."
+    />
   </head>
   <body>
     <div id="app"></div>

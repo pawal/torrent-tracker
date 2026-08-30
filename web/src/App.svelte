@@ -7,6 +7,7 @@
   import ThemeToggle from './lib/ThemeToggle.svelte'
   import { getVersion } from './lib/api.js'
   import { parseRoute, currentLocation, interceptLinks } from './lib/router.js'
+  import { applyMeta } from './lib/meta.js'
 
   // Real paths: '/', '/trackers', '/t/<name>', and '?country=XX' on the tracker
   // list so a filtered view can be linked to and gone back from.
@@ -40,6 +41,9 @@
     const [path, query] = loc.split('?')
     return parseRoute(path, query ?? '')
   })
+
+  // The head follows the route, so a shared link says what it points at.
+  $effect(() => applyMeta(route))
 </script>
 
 <header class="top">

@@ -17,6 +17,7 @@
 
   let data = $state(null)
   let error = $state(null)
+  let missing = $state(false)
   let loading = $state(true)
 
   const rollTitle = 'addresses change every run; the prefix is what is tracked'
@@ -62,9 +63,14 @@
     let cancelled = false
     loading = true
     error = null
+    missing = false
     getTracker(name, days)
       .then((d) => !cancelled && (data = d))
-      .catch((e) => !cancelled && (error = e.message))
+      .catch((e) => {
+        if (cancelled) return
+        missing = e.status === 404
+        error = e.message
+      })
       .finally(() => !cancelled && (loading = false))
     return () => (cancelled = true)
   })
@@ -105,7 +111,16 @@
   }
 </script>
 
-{#if error}
+{#if missing}
+  <div class="card">
+    <h2>Not found</h2>
+    <p class="muted">
+      No tracker named <code>{name}</code> is on record. It may never have been
+      imported, or the link may be mistyped.
+    </p>
+    <p class="sub"><a href="/trackers">Browse the tracker list</a></p>
+  </div>
+{:else if error}
   <div class="card"><p class="err">Failed to load {name}: {error}</p></div>
 {:else if loading}
   <div class="card"><p class="muted">Loading…</p></div>
@@ -135,7 +150,7 @@
       {data.reach_checked_at ? fmtTime(data.reach_checked_at) : 'never'}
       {#if !data.enabled}<span class="sep">·</span><span class="err">removed</span>{/if}
     </p>
-    <p class="sub"><a href="#/">← back to changes</a></p>
+    <p class="sub"><a href="/">← back to changes</a></p>
   </div>
 
   <div class="card">

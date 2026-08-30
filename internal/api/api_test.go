@@ -422,15 +422,133 @@ func TestStaticFrontend(t *testing.T) {
 	}
 }
 
-// Client-side routes must fall back to index.html so deep links work.
+// A deep link to a name that exists must render: the server hands back the
+// shell and the client fetches the rest.
 func TestStaticSPAFallback(t *testing.T) {
-	h, _ := testServer(t)
-	rec := get(t, h, "/t/some.tracker.example.com")
+	h, st := testServer(t)
+	seed(t, st)
+
+	rec := get(t, h, "/t/a.example.com")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deep link = %d, want 200 via the index fallback", rec.Code)
 	}
 	if body := rec.Body.String(); body != "<!doctype html><title>app</title>" {
 		t.Errorf("body = %q, want index.html", body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want HTML", ct)
+	}
+}
+
+// The pages the app renders, each of which must be a 200 so it can be indexed.
+func TestPageRoutes(t *testing.T) {
+	h, st := testServer(t)
+	seed(t, st)
+
+	for _, path := range []string{"/", "/trackers", "/networks", "/trackers?country=SE"} {
+		if rec := get(t, h, path); rec.Code != http.StatusOK {
+			t.Errorf("GET %s = %d, want 200", path, rec.Code)
+		}
+	}
+}
+
+// The whole point of routing on real paths: a path the app does not render has
+// to say so, or a crawler indexes every typo as a copy of the dashboard.
+func TestUnknownPageIs404(t *testing.T) {
+	h, st := testServer(t)
+	seed(t, st)
+
+	for _, path := range []string{"/nope", "/t", "/t/", "/t/a/b", "/trackers/extra"} {
+		rec := get(t, h, path)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", path, rec.Code)
+		}
+		// Still the shell, so the 404 is a rendered page rather than a bare
+		// status the browser has to style itself.
+		if body := rec.Body.String(); body != "<!doctype html><title>app</title>" {
+			t.Errorf("GET %s body = %q, want the shell", path, body)
+		}
+	}
+}
+
+// A tracker page is only real if the name is. The status has to reflect that,
+// not just the shape of the path.
+func TestUnknownTrackerPageIs404(t *testing.T) {
+	h, st := testServer(t)
+	seed(t, st)
+
+	if rec := get(t, h, "/t/ghost.example.com"); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /t/ghost.example.com = %d, want 404", rec.Code)
+	}
+	if rec := get(t, h, "/t/a.example.com"); rec.Code != http.StatusOK {
+		t.Errorf("GET /t/a.example.com = %d, want 200", rec.Code)
+	}
+}
+
+// Retiring a name keeps its history, so its page stays and stays indexable.
+func TestDisabledTrackerPageStillRenders(t *testing.T) {
+	h, st := testServer(t)
+	seed(t, st)
+
+	if err := st.RemoveTracker(t.Context(), "b.example.com", false); err != nil {
+		t.Fatal(err)
+	}
+	if rec := get(t, h, "/t/b.example.com"); rec.Code != http.StatusOK {
+		t.Errorf("retired tracker page = %d, want 200", rec.Code)
+	}
+}
+
+// Two spellings of one page is a duplicate; the redirect makes it one.
+func TestTrailingSlashRedirects(t *testing.T) {
+	h, _ := testServer(t)
+
+	rec := get(t, h, "/trackers/?country=SE")
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("GET /trackers/ = %d, want 301", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/trackers?country=SE" {
+		t.Errorf("Location = %q, want the query carried across", loc)
+	}
+}
+
+func TestCanonicalPath(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"/", "/"},
+		{"/trackers", "/trackers"},
+		{"/trackers/", "/trackers"},
+		{"/t/a.example.com/", "/t/a.example.com"},
+	}
+	for _, tt := range tests {
+		if got := canonicalPath(tt.in); got != tt.want {
+			t.Errorf("canonicalPath(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// docRoute is the Go half of the route table; parseRoute in router.js is the
+// other. They have to agree, so both are tested against the same paths.
+func TestDocRoute(t *testing.T) {
+	tests := []struct {
+		path string
+		name string
+		ok   bool
+	}{
+		{"/", "", true},
+		{"/trackers", "", true},
+		{"/networks", "", true},
+		{"/t/a.example.com", "a.example.com", true},
+		{"/t/tracker.example.com:1337", "tracker.example.com:1337", true},
+		{"/t", "", false},
+		{"/t/", "", false},
+		{"/t/a/b", "", false},
+		{"/nope", "", false},
+		{"/trackers/extra", "", false},
+	}
+	for _, tt := range tests {
+		name, ok := docRoute(tt.path)
+		if name != tt.name || ok != tt.ok {
+			t.Errorf("docRoute(%q) = (%q, %v), want (%q, %v)", tt.path, name, ok, tt.name, tt.ok)
+		}
 	}
 }
 

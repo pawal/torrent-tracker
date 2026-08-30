@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pawal/torrent-tracker/internal/store"
@@ -23,6 +24,10 @@ type Server struct {
 	Log   *slog.Logger
 	// Static, if non-nil, is served at / as the frontend.
 	Static fs.FS
+
+	shellOnce sync.Once
+	shellHTML []byte
+	shellErr  error
 }
 
 // Handler builds the router.
@@ -81,22 +86,6 @@ func (s *Server) logger() *slog.Logger {
 		return s.Log
 	}
 	return slog.Default()
-}
-
-// spaHandler serves the built frontend, falling back to index.html so client
-// routes deep-link correctly.
-func (s *Server) spaHandler() http.Handler {
-	files := http.FileServer(http.FS(s.Static))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if path != "/" {
-			if _, err := fs.Stat(s.Static, path[1:]); err != nil {
-				r = r.Clone(r.Context())
-				r.URL.Path = "/"
-			}
-		}
-		files.ServeHTTP(w, r)
-	})
 }
 
 func logging(log *slog.Logger, next http.Handler) http.Handler {

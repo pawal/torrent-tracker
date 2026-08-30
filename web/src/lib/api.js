@@ -8,7 +8,8 @@ async function get(path) {
     } catch {
       // non-JSON error body; keep the status line
     }
-    throw new Error(msg)
+    // The status rides along: a 404 is a missing name, not a broken server.
+    throw Object.assign(new Error(msg), { status: res.status })
   }
   return res.json()
 }

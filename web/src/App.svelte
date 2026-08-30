@@ -3,17 +3,23 @@
   import Trackers from './lib/Trackers.svelte'
   import TrackerDetail from './lib/TrackerDetail.svelte'
   import Networks from './lib/Networks.svelte'
+  import NotFound from './lib/NotFound.svelte'
   import ThemeToggle from './lib/ThemeToggle.svelte'
   import { getVersion } from './lib/api.js'
+  import { parseRoute, currentLocation, interceptLinks } from './lib/router.js'
 
-  // Minimal hash router: '#/', '#/trackers', '#/t/<name>', and '?country=XX' on
-  // the tracker list so a filtered view can be linked to and gone back from.
-  let hash = $state(window.location.hash || '#/')
+  // Real paths: '/', '/trackers', '/t/<name>', and '?country=XX' on the tracker
+  // list so a filtered view can be linked to and gone back from.
+  let loc = $state(currentLocation())
 
   $effect(() => {
-    const onHash = () => (hash = window.location.hash || '#/')
-    window.addEventListener('hashchange', onHash)
-    return () => window.removeEventListener('hashchange', onHash)
+    const sync = () => (loc = currentLocation())
+    const stop = interceptLinks(sync)
+    window.addEventListener('popstate', sync)
+    return () => {
+      stop()
+      window.removeEventListener('popstate', sync)
+    }
   })
 
   // Build versions for the footer. Reads no reactive state, so it runs once;
@@ -31,14 +37,8 @@
   })
 
   const route = $derived.by(() => {
-    const [path, query] = hash.replace(/^#/, '').split('?')
-    const detail = path.match(/^\/t\/(.+)$/)
-    if (detail) return { name: 'detail', tracker: decodeURIComponent(detail[1]) }
-    if (path === '/trackers') {
-      return { name: 'trackers', country: new URLSearchParams(query).get('country') ?? '' }
-    }
-    if (path === '/networks') return { name: 'networks' }
-    return { name: 'dashboard' }
+    const [path, query] = loc.split('?')
+    return parseRoute(path, query ?? '')
   })
 </script>
 
@@ -49,11 +49,11 @@
   </div>
   <div class="header-controls">
     <nav>
-      <a href="#/" class:active={route.name === 'dashboard'}>Changes</a>
-      <a href="#/trackers" class:active={route.name === 'trackers' || route.name === 'detail'}>
+      <a href="/" class:active={route.name === 'dashboard'}>Changes</a>
+      <a href="/trackers" class:active={route.name === 'trackers' || route.name === 'detail'}>
         Trackers
       </a>
-      <a href="#/networks" class:active={route.name === 'networks'}>Networks</a>
+      <a href="/networks" class:active={route.name === 'networks'}>Networks</a>
     </nav>
     <a
       class="icon-link"
@@ -87,6 +87,8 @@
     <Trackers country={route.country} />
   {:else if route.name === 'networks'}
     <Networks />
+  {:else if route.name === 'notfound'}
+    <NotFound path={loc} />
   {:else}
     <Dashboard />
   {/if}

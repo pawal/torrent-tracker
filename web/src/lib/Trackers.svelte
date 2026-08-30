@@ -1,5 +1,6 @@
 <script>
   import { getTrackers, fmtTime, fmtSince, describeNetwork, flag, inCountry } from './api.js'
+  import { trackerPath } from './router.js'
 
   // country arrives from the URL, set by clicking a row on the networks page.
   let { country = '' } = $props()
@@ -58,7 +59,7 @@
           Trackers with an address in <strong>{flag(country)} {country}</strong>. One served from
           several countries appears under each of them.
         {/if}
-        <a href="#/trackers">Show all</a>
+        <a href="/trackers">Show all</a>
       </p>
     {/if}
     <div class="controls">
@@ -92,7 +93,7 @@
               <td class="mono col-name">
                 <!-- Clipped by CSS; the tooltip carries the full name, and the
                      detail page has it in the heading. -->
-                <a href="#/t/{encodeURIComponent(t.name)}" title={t.name}>{t.name}</a>
+                <a href={trackerPath(t.name)} title={t.name}>{t.name}</a>
               </td>
               <td>
                 <span class="pill {t.last_status || 'unchecked'}">

@@ -6,6 +6,7 @@
     describeNetwork,
     flag,
   } from './api.js'
+  import { trackerPath, countryPath } from './router.js'
 
   let data = $state(null)
   let error = $state(null)
@@ -147,7 +148,7 @@
                 </td>
                 <td class="mono">
                   {#each a.trackers as name (name)}
-                    <a class="block" href="#/t/{encodeURIComponent(name)}">{name}</a>
+                    <a class="block" href={trackerPath(name)}>{name}</a>
                   {/each}
                 </td>
               </tr>
@@ -217,7 +218,7 @@
             {#each data.countries as c (c.key)}
               <tr>
                 <td class="mono">
-                  <a href="#/trackers?country={encodeURIComponent(c.key)}">{flag(c.key)} {c.key}</a>
+                  <a href={countryPath(c.key)}>{flag(c.key)} {c.key}</a>
                 </td>
                 <td class="mono">{c.trackers}</td>
                 <td class="mono">{c.ips}</td>

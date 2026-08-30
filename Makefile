@@ -10,10 +10,12 @@ LIST    ?= list.txt
 export CGO_ENABLED = 0
 
 GO_SRC  := $(shell find . -name '*.go' -not -path './web/node_modules/*')
-WEB_SRC := $(shell find web/src -type f 2>/dev/null) web/index.html web/vite.config.js
+# Test files are not bundled, so they must not trigger a UI rebuild.
+WEB_SRC := $(shell find web/src -type f -not -name '*.test.js' 2>/dev/null) \
+           web/index.html web/vite.config.js
 UI      := web/dist/index.html
 
-.PHONY: all build ui test vet fmt tidy check vuln clean distclean run poll import list changes dev install help
+.PHONY: all build ui test test-go test-ui vet fmt tidy check vuln clean distclean run poll import list changes dev install help
 
 all: build ## Build the UI and the binary (default)
 
@@ -38,8 +40,13 @@ install: $(UI) ## go install the binary into GOBIN
 
 ## --- quality -------------------------------------------------------------
 
-test: $(UI) ## Run the Go test suite
+test: test-go test-ui ## Run both test suites
+
+test-go: $(UI) ## Run the Go test suite
 	go test ./...
+
+test-ui: web/node_modules ## Run the frontend test suite
+	cd web && npm test
 
 vet: $(UI) ## Run go vet
 	go vet ./...

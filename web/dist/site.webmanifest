@@ -1,0 +1,14 @@
+{
+  "name": "torrent-tracker",
+  "short_name": "trackers",
+  "description": "BitTorrent tracker DNS history, reachability and hosting.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0b2d4d",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

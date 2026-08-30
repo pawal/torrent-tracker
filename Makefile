@@ -11,7 +11,7 @@ export CGO_ENABLED = 0
 
 GO_SRC  := $(shell find . -name '*.go' -not -path './web/node_modules/*')
 # Test files are not bundled, so they must not trigger a UI rebuild.
-WEB_SRC := $(shell find web/src -type f -not -name '*.test.js' 2>/dev/null) \
+WEB_SRC := $(shell find web/src web/public -type f -not -name '*.test.js' 2>/dev/null) \
            web/index.html web/vite.config.js
 UI      := web/dist/index.html
 

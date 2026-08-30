@@ -40,6 +40,7 @@ func testServer(t *testing.T) (http.Handler, *store.Store) {
 		Static: fstest.MapFS{
 			"index.html":    &fstest.MapFile{Data: []byte("<!doctype html><title>app</title>")},
 			"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+			"favicon.ico":   &fstest.MapFile{Data: []byte("\x00\x00\x01\x00\x01\x00")},
 		},
 	}
 	return srv.Handler(), st
@@ -437,6 +438,21 @@ func TestStaticSPAFallback(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want HTML", ct)
+	}
+}
+
+// A file at the root is not a page, and used to be answered with the shell.
+// Browsers ask for /favicon.ico whether or not the HTML links it, and getting
+// HTML back means no icon and a wasted request on every visit.
+func TestRootFileIsServedNotRouted(t *testing.T) {
+	h, _ := testServer(t)
+
+	rec := get(t, h, "/favicon.ico")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /favicon.ico = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want the icon rather than the shell", ct)
 	}
 }
 

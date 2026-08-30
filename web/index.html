@@ -11,23 +11,19 @@
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4f6f9" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d1117" />
 
-    <!-- Defaults for the dashboard. trackerd rewrites them per route before
-         serving, and meta.js keeps them current as the client navigates. -->
+    <!-- Defaults for the dashboard. trackerd substitutes each page's own
+         metadata for them before serving, and meta.js keeps them current as
+         the client navigates. One tag per line: the substitution matches whole
+         attribute values, so a wrapped tag would be missed. -->
     <title>torrent-tracker — BitTorrent tracker DNS history</title>
-    <meta
-      name="description"
-      content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change."
-    />
+    <meta name="description" content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change." />
     <meta name="robots" content="index, follow" />
     <link rel="canonical" href="https://tracker.evilbit.de/" />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="torrent-tracker" />
     <meta property="og:title" content="torrent-tracker — BitTorrent tracker DNS history" />
-    <meta
-      property="og:description"
-      content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change."
-    />
+    <meta property="og:description" content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change." />
     <meta property="og:url" content="https://tracker.evilbit.de/" />
     <meta property="og:image" content="https://tracker.evilbit.de/og-image.png" />
     <meta property="og:image:width" content="1200" />
@@ -35,12 +31,9 @@
     <meta property="og:image:alt" content="torrent-tracker — tracker uptime intervals" />
 
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="https://tracker.evilbit.de/og-image.png" />
     <meta name="twitter:title" content="torrent-tracker — BitTorrent tracker DNS history" />
-    <meta
-      name="twitter:description"
-      content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change."
-    />
+    <meta name="twitter:description" content="Which BitTorrent trackers still answer, and where they live. Hourly DNS collection, BEP 15 and BEP 48 probes, and an append-only feed of every change." />
+    <meta name="twitter:image" content="https://tracker.evilbit.de/og-image.png" />
   </head>
   <body>
     <div id="app"></div>

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/pawal/torrent-tracker/internal/store"
@@ -54,13 +55,28 @@ func (s *Server) shell() ([]byte, error) {
 	return s.shellHTML, s.shellErr
 }
 
-// servePage writes the shell under the given status.
-func (s *Server) servePage(w http.ResponseWriter, r *http.Request, status int) {
-	body, err := s.shell()
+// servePage writes the shell carrying this page's metadata, so a crawler that
+// does not run JS still sees it.
+func (s *Server) servePage(w http.ResponseWriter, r *http.Request, status int, path, country string, t *store.Tracker) {
+	shell, err := s.shell()
 	if err != nil {
 		s.serverError(w, err)
 		return
 	}
+	// A name can need escaping even though a hostname should not.
+	loc := path
+	if t != nil {
+		loc = trackerPrefix + url.PathEscape(t.Name)
+	}
+	title, desc := pageMeta(path, country, t)
+	body := renderShell(shell, head{
+		Title:       title,
+		Description: desc,
+		URL:         s.baseURL(r) + loc + canonicalQuery(country),
+		Image:       s.baseURL(r) + "/og-image.png",
+		NoIndex:     status != http.StatusOK,
+	})
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The shell names hashed assets, so it must never be held.
 	w.Header().Set("Cache-Control", "no-cache")
@@ -68,14 +84,25 @@ func (s *Server) servePage(w http.ResponseWriter, r *http.Request, status int) {
 	w.Write(body)
 }
 
-// trackerExists says whether a detail page has anything behind it. A retired
-// name still does: keeping its history is the point.
-func (s *Server) trackerExists(ctx context.Context, name string) bool {
-	_, err := s.Store.TrackerByName(ctx, name)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		s.logger().Error("page lookup failed", "name", name, "err", err)
+// canonicalQuery keeps the one parameter that makes a different page.
+func canonicalQuery(country string) string {
+	if country == "" {
+		return ""
 	}
-	return err == nil
+	return "?country=" + url.QueryEscape(country)
+}
+
+// lookupTracker returns the tracker a detail page is about, or nil. A retired
+// name still has one.
+func (s *Server) lookupTracker(ctx context.Context, name string) *store.Tracker {
+	t, err := s.Store.TrackerByName(ctx, name)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			s.logger().Error("page lookup failed", "name", name, "err", err)
+		}
+		return nil
+	}
+	return &t
 }
 
 // spaHandler serves the built frontend. A path the app renders gets the shell
@@ -108,10 +135,24 @@ func (s *Server) spaHandler() http.Handler {
 			return
 		}
 
-		if !ok || (name != "" && !s.trackerExists(r.Context(), name)) {
-			s.servePage(w, r, http.StatusNotFound)
+		if !ok {
+			s.servePage(w, r, http.StatusNotFound, c, "", nil)
 			return
 		}
-		s.servePage(w, r, http.StatusOK)
+
+		var t *store.Tracker
+		if name != "" {
+			if t = s.lookupTracker(r.Context(), name); t == nil {
+				s.servePage(w, r, http.StatusNotFound, c, "", nil)
+				return
+			}
+		}
+		// The filter only means anything on the list, and only it is kept: any
+		// other parameter would mint a duplicate of the same page.
+		country := ""
+		if c == pathTrackers {
+			country = r.URL.Query().Get("country")
+		}
+		s.servePage(w, r, http.StatusOK, c, country, t)
 	})
 }

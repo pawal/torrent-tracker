@@ -3,6 +3,7 @@
     getTracker, describe, fmtTime, fmtDate, describeNetwork, flag,
     probeLanes, resolutionLane, addressLanes, axisTicks, fmtPercent,
   } from './api.js'
+  import { applyMeta } from './meta.js'
 
   let { name } = $props()
 
@@ -65,7 +66,12 @@
     error = null
     missing = false
     getTracker(name, days)
-      .then((d) => !cancelled && (data = d))
+      .then((d) => {
+        if (cancelled) return
+        data = d
+        // The server said this already; keep it true across navigation.
+        applyMeta({ name: 'detail', tracker: name }, d)
+      })
       .catch((e) => {
         if (cancelled) return
         missing = e.status === 404

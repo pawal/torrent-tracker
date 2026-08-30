@@ -9,8 +9,19 @@ const NOT_FOUND = {
   description: 'No page at this address.',
 }
 
+/** The clause a detail page opens with. Mirrors trackerState in meta.go. */
+export function trackerState(t) {
+  if (t?.bep34_denies) return 'publishes a BEP 34 record naming no tracker and is no longer probed'
+  if (t?.parked) return 'resolves only to parking addresses'
+  if (t?.reach === 'live') return 'resolves and answers the tracker protocol'
+  if (t?.reach === 'partial') return 'answers on some of its addresses'
+  if (t?.last_status && t.last_status !== 'ok') return `does not resolve (${t.last_status})`
+  if (t?.reach === 'dead') return 'resolves but answers nothing'
+  return 'has not been probed yet'
+}
+
 /** Title and description for a route. Mirrors pageMeta in internal/api/meta.go. */
-export function pageMeta(route) {
+export function pageMeta(route, tracker = null) {
   switch (route?.name) {
     case 'dashboard':
       return {
@@ -50,11 +61,21 @@ export function pageMeta(route) {
           'and the tracker software behind each endpoint.',
       }
     case 'detail':
+      // Before the fetch lands there is nothing to say about the name but its
+      // own; the server has already served the fuller sentence.
+      if (!tracker) {
+        return {
+          title: `${route.tracker} — ${SITE}`,
+          description:
+            `Address history, reachability and DNS status for the BitTorrent tracker ` +
+            `${route.tracker}, collected hourly and probed every six hours.`,
+        }
+      }
       return {
-        title: `${route.tracker} — ${SITE}`,
+        title: `${tracker.name} — ${SITE}`,
         description:
-          `Address history, reachability and DNS status for the BitTorrent tracker ` +
-          `${route.tracker}, collected hourly and probed every six hours.`,
+          `${tracker.name} ${trackerState(tracker)}. Address history, reachability ` +
+          `and DNS status, collected hourly and probed every six hours.`,
       }
     default:
       return NOT_FOUND
@@ -71,8 +92,8 @@ const setters = [
 ]
 
 /** Write a route's metadata into the document head. */
-export function applyMeta(route, location = window.location) {
-  const meta = pageMeta(route)
+export function applyMeta(route, tracker = null, location = window.location) {
+  const meta = pageMeta(route, tracker)
   document.title = meta.title
 
   for (const [selector, attr, pick] of setters) {
@@ -81,6 +102,16 @@ export function applyMeta(route, location = window.location) {
 
   // Canonical and og:url are absolute, and name the page actually shown.
   const url = location.origin + location.pathname + location.search
-  document.head.querySelector('link[rel="canonical"]')?.setAttribute('href', url)
+  const canonical = document.head.querySelector('link[rel="canonical"]')
   document.head.querySelector('meta[property="og:url"]')?.setAttribute('content', url)
+
+  // A path that renders nothing must not claim to be canonical, and must not
+  // be indexed. The server says the same for a cold load.
+  const gone = route?.name === 'notfound'
+  document.head
+    .querySelector('meta[name="robots"]')
+    ?.setAttribute('content', gone ? 'noindex, follow' : 'index, follow')
+  // Dropping the href rather than the tag, so navigating back restores it.
+  if (gone) canonical?.removeAttribute('href')
+  else canonical?.setAttribute('href', url)
 }

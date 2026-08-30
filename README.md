@@ -560,10 +560,46 @@ needs no authentication.
 | `GET /api/runs` | recent collection runs |
 | `GET /api/version` | the build's version and the DNS library behind it |
 | `GET /healthz` | liveness |
+| `GET /robots.txt` | crawl rules and the sitemap's address |
+| `GET /sitemap.xml` | every page worth crawling, see [Pages and crawlers](#pages-and-crawlers) |
 
 `limit` has a default per endpoint and is capped at 1000; anything unparseable or
 non-positive falls back to the default. Every `/api/` response carries
 `Access-Control-Allow-Origin: *`, so any site can read the data from the browser.
+
+## Pages and crawlers
+
+The UI has real paths, not `#/` fragments — a fragment is one URL to a search
+engine, so every tracker page used to be invisible.
+
+| Path | Page |
+| --- | --- |
+| `/` | the change feed |
+| `/trackers` | every tracker, `?country=XX` for one country |
+| `/networks` | AS, RIR, country and software breakdowns |
+| `/t/{name}` | one tracker's history |
+
+The server knows the same route table, so it answers an unknown path or an
+unknown name with a 404 and `noindex` rather than the shell and a 200.
+`/trackers/` redirects to `/trackers`.
+
+The shell it serves already carries that page's title, description, canonical
+URL, Open Graph tags and a schema.org `Dataset` — unfurlers and crawlers do not
+run JS. `web/src/lib/meta.js` derives the same text client-side as you navigate.
+
+`/sitemap.xml` lists the top pages and one per live tracker. `lastmod` is the
+date of the last recorded *change*, not the last check: the poll runs hourly,
+and a sitemap that moves every hour is one nobody believes.
+
+Canonical and sitemap links are absolute, so a public deployment must say where
+it lives:
+
+```sh
+trackerd serve --base-url https://tracker.example.com
+```
+
+Without it the daemon reads `Host` and `X-Forwarded-Proto`, which is right only
+if the proxy sets them.
 
 ## Running as a service
 
@@ -604,8 +640,12 @@ The unit listens on `127.0.0.1:8080` and expects a reverse proxy in front:
 location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
 }
 ```
+
+Add `--base-url` to `ExecStart` as well, so canonical links do not depend on
+headers being right.
 
 To change the port, override `ExecStart` in a drop-in with `sudo systemctl edit
 trackerd` rather than editing the installed unit:
@@ -630,7 +670,8 @@ plus its own state directory. A port below 1024 therefore needs
 ## Development
 
 ```sh
-make check      # gofmt, go vet, go test
+make check      # gofmt, go vet, both test suites
+make test-ui    # the frontend tests alone (node --test, no extra deps)
 make vuln       # govulncheck
 make dev        # Vite dev server with hot reload, proxying /api to :8080
 make help       # all targets
@@ -647,7 +688,8 @@ scan, so it reports only what the code can reach.
 
 The frontend build output in `web/dist/` is committed so `go build` and
 `go install` work without Node installed. Rebuild it with `make ui` after
-changing anything under `web/src/`.
+changing anything under `web/src/` or `web/public/` (the icons, the manifest),
+which Vite copies into `dist/` verbatim.
 
 ## Layout
 
@@ -659,10 +701,11 @@ internal/bep34/        BEP 34 tracker preferences published in TXT records
 internal/enrich/       AS/RIR/geo providers: Cymru, RDAP, MaxMind
 internal/prober/       BEP 15 and BEP 48 checks, software fingerprinting
 internal/collector/    scheduler, the pure diff engine, enrichment and probe runners
-internal/api/          HTTP handlers
+internal/api/          HTTP handlers, page routing, metadata, sitemap
 internal/trackerlist/  announce-URL parsing and list fetching
 internal/cli/          subcommands
 web/                   Svelte 5 + Vite frontend, embedded via go:embed
+web/public/            icons, social card and manifest, copied into dist/
 deploy/                systemd unit
 legacy/                the original Perl implementation
 ```

@@ -111,6 +111,15 @@ func (s *Server) lookupTracker(ctx context.Context, name string) *store.Tracker 
 	return &t
 }
 
+// contentTypeFor covers the extensions Go's mime table does not know. An empty
+// result leaves the choice to http.ServeContent.
+func contentTypeFor(path string) string {
+	if strings.HasSuffix(path, ".webmanifest") {
+		return "application/manifest+json"
+	}
+	return ""
+}
+
 // cacheFor is how long a static file may be held. Embedded files carry no
 // mtime, so this header is all a browser has to go on.
 func cacheFor(path string) string {
@@ -133,6 +142,9 @@ func (s *Server) spaHandler() http.Handler {
 		if p != "/" {
 			if st, err := fs.Stat(s.Static, strings.TrimPrefix(p, "/")); err == nil && !st.IsDir() {
 				w.Header().Set("Cache-Control", cacheFor(p))
+				if ct := contentTypeFor(p); ct != "" {
+					w.Header().Set("Content-Type", ct)
+				}
 				files.ServeHTTP(w, r)
 				return
 			}

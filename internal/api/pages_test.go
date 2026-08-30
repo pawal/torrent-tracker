@@ -3,6 +3,7 @@ package api
 import (
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // Embedded files have no mtime, so http.FileServer sends neither Last-Modified
@@ -36,5 +37,20 @@ func TestCacheFor(t *testing.T) {
 	}
 	if got := cacheFor("/og-image.png"); !strings.Contains(got, "86400") {
 		t.Errorf("cacheFor(icon) = %q", got)
+	}
+}
+
+// Go's mime table has no entry for .webmanifest, so http.FileServer sniffs it
+// as text/plain and some browsers refuse to install the icons.
+func TestWebManifestContentType(t *testing.T) {
+	st := testStore(t)
+	srv := &Server{Store: st, Log: discard(), Static: fstest.MapFS{
+		"index.html":       &fstest.MapFile{Data: []byte("<!doctype html>")},
+		"site.webmanifest": &fstest.MapFile{Data: []byte(`{"name":"x"}`)},
+	}}
+
+	rec := get(t, srv.Handler(), "/site.webmanifest")
+	if ct := rec.Header().Get("Content-Type"); ct != "application/manifest+json" {
+		t.Errorf("Content-Type = %q, want application/manifest+json", ct)
 	}
 }

@@ -7,7 +7,7 @@ import (
 )
 
 // Version is the release of torrent-tracker.
-const Version = "1.0.3"
+const Version = "1.1.0"
 
 // DNSLib returns the version of the miekg/dns module this binary was built
 // with, or "" when the build information is unavailable (as with `go run`).
@@ -27,4 +27,4 @@ func DNSLib() string {
 
 // UserAgent identifies us to the HTTP trackers we probe, the registries we
 // query and the tracker lists we fetch.
-const UserAgent = "torrent-tracker/1.0 (+https://github.com/pawal/torrent-tracker)"
+const UserAgent = "torrent-tracker/1.1 (+https://github.com/pawal/torrent-tracker)"

@@ -61,8 +61,8 @@
   const real = $derived(matching.filter((t) => trackerClass(t) === 'tracker'))
   const other = $derived(matching.filter((t) => trackerClass(t) !== 'tracker'))
 
-  // Counts for the chips are of the trackers, not of the filtered view: a chip
-  // saying "0" is more use than one that has vanished.
+  // Counts are within the country and search scope but before the health chip,
+  // so picking one chip does not renumber the others.
   const counts = $derived.by(() => {
     const out = {}
     for (const t of real) out[healthOf(t)] = (out[healthOf(t)] ?? 0) + 1

@@ -1,6 +1,6 @@
 <script>
   import {
-    getTracker, describe, fmtTime, fmtDate, describeNetwork, flag,
+    getTracker, describe, fmtAgo, fmtTime, fmtDate, describeNetwork, flag,
     probeLanes, resolutionLane, addressLanes, axisTicks, fmtPercent,
   } from './api.js'
   import { applyMeta } from './meta.js'
@@ -506,7 +506,7 @@
         {#each data.changes as c (c.id)}
           {@const d = describe(c)}
           <li>
-            <time datetime={c.observed_at}>{fmtTime(c.observed_at)}</time>
+            <time datetime={c.observed_at} title={fmtTime(c.observed_at)}>{fmtAgo(c.observed_at)}</time>
             <span class="sign {d.cls}">{d.sign}</span>
             <span class="body"><span class="what">{d.text}</span></span>
           </li>

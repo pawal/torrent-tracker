@@ -1,5 +1,5 @@
 <script>
-  import { getStats, getChanges, describe, fmtTime } from './api.js'
+  import { getStats, getChanges, describe, fmtAgo, fmtTime } from './api.js'
   import { trackerPath } from './router.js'
 
   let stats = $state(null)
@@ -94,7 +94,7 @@
         {#each changes as c (c.id)}
           {@const d = describe(c)}
           <li>
-            <time datetime={c.observed_at}>{fmtTime(c.observed_at)}</time>
+            <time datetime={c.observed_at} title={fmtTime(c.observed_at)}>{fmtAgo(c.observed_at)}</time>
             <span class="sign {d.cls}">{d.sign}</span>
             <span class="body">
               <a href={trackerPath(c.tracker)}>{c.tracker}</a>

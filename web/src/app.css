@@ -550,7 +550,7 @@ td.col-name {
 }
 .feed li {
   display: grid;
-  grid-template-columns: 168px 14px 1fr;
+  grid-template-columns: 66px 14px 1fr;
   gap: var(--space-3);
   align-items: baseline;
   padding: 8px 0;

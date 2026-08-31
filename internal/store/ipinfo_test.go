@@ -58,7 +58,13 @@ func TestPutIPInfoUpserts(t *testing.T) {
 }
 
 func TestIPInfoHolder(t *testing.T) {
-	if got := (IPInfo{Org: "O", ASName: "A", NetworkName: "N"}).Holder(); got != "O" {
+	// The AS name wins: an RDAP org is as often a maintainer handle as a
+	// company, and "HOS-GUN" names nothing a reader recognises.
+	got := (IPInfo{Org: "HOS-GUN", ASName: "HETZNER-AS - Hetzner Online GmbH, DE"}).Holder()
+	if got != "HETZNER-AS - Hetzner Online GmbH, DE" {
+		t.Errorf("got %q, want the AS name", got)
+	}
+	if got := (IPInfo{Org: "O", NetworkName: "N"}).Holder(); got != "O" {
 		t.Errorf("got %q, want the org", got)
 	}
 	if got := (IPInfo{ASName: "A", NetworkName: "N"}).Holder(); got != "A" {

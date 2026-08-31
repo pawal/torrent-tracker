@@ -221,9 +221,11 @@ export function describeNetwork(n) {
   if (!n) return ''
   const parts = []
   if (n.asn) parts.push(`AS${n.asn}`)
-  // Cymru AS names read "CLOUDFLARENET - Cloudflare, Inc., US". Drop the
-  // handle prefix and trailing country; both are shown elsewhere.
-  const holder = (n.holder ?? n.org ?? n.as_name ?? n.network_name ?? '')
+  // The AS name before org: RDAP's org is often the maintainer handle, so
+  // AS24940 reads "HOS-GUN" by org and "Hetzner Online GmbH" by AS name.
+  // Cymru AS names read "CLOUDFLARENET - Cloudflare, Inc., US"; drop the
+  // handle prefix and trailing country, both of which are shown elsewhere.
+  const holder = (n.holder ?? n.as_name ?? n.org ?? n.network_name ?? '')
     .replace(/^[A-Z0-9_-]+\s+-\s+/, '')
     .replace(/,\s*[A-Z]{2}$/, '')
   if (holder) parts.push(holder)

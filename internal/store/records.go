@@ -542,7 +542,7 @@ func (s *Store) SharedAddresses(ctx context.Context, since time.Time, limit int)
 	err := s.eachRow(ctx, `
 		SELECT r.ip, r.family, t.name, MAX(r.last_seen), MAX(r.active),
 		       COALESCE(i.asn, 0),
-		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), i.network_name, ''),
+		       `+holderLabel+`,
 		       COALESCE(i.rir, ''), COALESCE(i.country, '')
 		FROM ip_records r
 		JOIN trackers t ON t.id = r.tracker_id

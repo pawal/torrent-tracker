@@ -29,9 +29,12 @@ type IPInfo struct {
 	Error       string    `json:"error,omitempty"`
 }
 
-// Holder is the most useful human-readable owner of the address.
+// Holder is the most useful human-readable owner of the address. The AS name
+// comes first because RDAP's org is often the maintainer handle rather than a
+// company: AS24940 is "HOS-GUN" by org and "HETZNER-AS - Hetzner Online GmbH"
+// by AS name. Org stays in the JSON, where it names the party leasing a prefix.
 func (i IPInfo) Holder() string {
-	for _, s := range []string{i.Org, i.ASName, i.NetworkName} {
+	for _, s := range []string{i.ASName, i.Org, i.NetworkName} {
 		if s != "" {
 			return s
 		}
@@ -268,6 +271,9 @@ func prefixed(columns, alias string) string {
 	return strings.Join(parts, ", ")
 }
 
+// holderLabel is Holder() in SQL, for the queries that roll addresses up.
+const holderLabel = `COALESCE(NULLIF(i.as_name, ''), NULLIF(i.org, ''), i.network_name, '')`
+
 // recordInfoJoin ties a record to its enrichment: addresses join on the
 // address, prefix records on the prefix they stand for.
 const recordInfoJoin = `JOIN ip_info i ON (r.is_prefix = 0 AND i.ip = r.ip)
@@ -293,7 +299,7 @@ func (s *Store) TopNetworks(ctx context.Context, limit int) ([]NetworkStat, erro
 	}
 	return s.networkStats(ctx, `
 		SELECT CASE WHEN i.asn = 0 THEN 'unknown' ELSE 'AS' || i.asn END,
-		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), ''),
+		       `+holderLabel+`,
 		       COUNT(DISTINCT r.tracker_id), COUNT(DISTINCT r.ip)
 		FROM ip_records r
 		`+recordInfoJoin+`
@@ -371,7 +377,7 @@ func (s *Store) TrackerNetworks(ctx context.Context) (map[int64][]NetworkRef, er
 	out := map[int64][]NetworkRef{}
 	err := s.eachRow(ctx, `
 		SELECT DISTINCT r.tracker_id, i.asn,
-		       COALESCE(NULLIF(i.org, ''), NULLIF(i.as_name, ''), i.network_name),
+		       `+holderLabel+`,
 		       i.rir, i.country
 		FROM ip_records r
 		`+recordInfoJoin+`

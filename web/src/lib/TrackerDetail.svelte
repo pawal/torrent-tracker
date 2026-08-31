@@ -108,6 +108,14 @@
   // throughout is not proof that every round inside it answered.
   const misses = $derived(lanes.reduce((n, l) => n + l.misses, 0))
 
+  // The AS holder is the label; the org names whoever leases the prefix, which
+  // is a different fact and only worth showing when the two disagree.
+  function networkTitle(n) {
+    const label = describeNetwork(n)
+    if (!n.org || label.endsWith(n.org)) return label
+    return `${label}\nprefix held by ${n.org}`
+  }
+
   function segTitle(what, seg) {
     const to = seg.open ? 'now' : fmtTime(new Date(seg.to).toISOString())
     const why = seg.reason ? ` (${seg.reason})` : ''
@@ -461,7 +469,9 @@
                 </td>
                 <td class="net-tag">
                   {#if n && (n.asn || n.org || n.as_name)}
-                    <span class="asn">{describeNetwork(n)}</span>
+                    <!-- The label is the AS holder, so a prefix leased to
+                         somebody else says so in the tooltip. -->
+                    <span class="asn" title={networkTitle(n)}>{describeNetwork(n)}</span>
                     {#if n.prefix}<span class="block">{n.prefix}</span>{/if}
                   {:else}-{/if}
                 </td>

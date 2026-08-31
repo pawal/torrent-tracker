@@ -1,15 +1,26 @@
 <script>
-  import { getStats, getChanges, describe, fmtAgo, fmtTime } from './api.js'
+  import {
+    getStats, getChanges, collapseChanges, describe, fmtAgo, fmtSpan, fmtTime,
+  } from './api.js'
   import { trackerPath } from './router.js'
+
+  // A week, folded. Unfolded it is 820 rows; the server caps a request at 1000,
+  // and the note below says when the window held more than that.
+  const feedDays = 7
+  const feedLimit = 1000
 
   let stats = $state(null)
   let changes = $state([])
   let error = $state(null)
   let loading = $state(true)
 
+  // Folding is the default view. Off shows every entry, in order.
+  let folded = $state(true)
+  let opened = $state(new Set())
+
   $effect(() => {
     let cancelled = false
-    Promise.all([getStats(), getChanges(200)])
+    Promise.all([getStats(), getChanges(feedLimit, feedDays)])
       .then(([s, c]) => {
         if (cancelled) return
         stats = s
@@ -19,6 +30,20 @@
       .finally(() => !cancelled && (loading = false))
     return () => (cancelled = true)
   })
+
+  const rows = $derived(
+    folded
+      ? collapseChanges(changes)
+      : changes.map((c) => ({ kind: 'one', key: `c${c.id}`, change: c })),
+  )
+  const foldedAway = $derived(changes.length - rows.length)
+
+  function toggle(key) {
+    const next = new Set(opened)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    opened = next
+  }
 
   // Worst first, so a wall of "ok" never buries the interesting statuses.
   const order = ['nxdomain', 'servfail', 'timeout', 'nodata', 'unchecked', 'ok']
@@ -86,21 +111,77 @@
   {/if}
 
   <div class="card">
-    <h2>Recent changes</h2>
+    <div class="detail-head">
+      <h2>Recent changes</h2>
+      {#if foldedAway > 0 || !folded}
+        <button class="link" onclick={() => (folded = !folded)}>
+          {folded ? `show all ${changes.length}` : 'fold repeats'}
+        </button>
+      {/if}
+    </div>
     {#if changes.length === 0}
-      <p class="muted">Nothing recorded yet. Run <code>trackerd poll</code>.</p>
+      <p class="muted">
+        Nothing recorded in the last {feedDays} days. A new database has no
+        history yet; run <code>trackerd poll</code>.
+      </p>
     {:else}
+      <p class="sub">
+        The last {feedDays} days.
+        {#if folded && foldedAway > 0}
+          {rows.length} of {changes.length} entries: a name that keeps changing the
+          same thing is one row, opened by its count.
+        {:else}
+          {changes.length} entries.
+        {/if}
+        {#if changes.length >= feedLimit}
+          The window holds more; this is the newest {feedLimit}.
+        {/if}
+      </p>
       <ul class="feed">
-        {#each changes as c (c.id)}
-          {@const d = describe(c)}
-          <li>
-            <time datetime={c.observed_at} title={fmtTime(c.observed_at)}>{fmtAgo(c.observed_at)}</time>
-            <span class="sign {d.cls}">{d.sign}</span>
-            <span class="body">
-              <a href={trackerPath(c.tracker)}>{c.tracker}</a>
-              <span class="what">{d.text}</span>
-            </span>
-          </li>
+        {#each rows as row (row.key)}
+          {#if row.kind === 'run'}
+            {@const span = fmtSpan(row.earliest, row.latest)}
+            <li>
+              <time datetime={row.latest} title={fmtTime(row.latest)}>{fmtAgo(row.latest)}</time>
+              <span class="sign net">~</span>
+              <span class="body">
+                <a href={trackerPath(row.tracker)}>{row.tracker}</a>
+                <span class="what">{row.text}</span>
+                <button
+                  class="link count"
+                  title="{row.count} entries, oldest {fmtTime(row.earliest)}"
+                  onclick={() => toggle(row.key)}
+                >
+                  {opened.has(row.key) ? 'hide' : `${row.count}×`}
+                </button>
+                {#if span}<span class="muted">{span}</span>{/if}
+              </span>
+            </li>
+            {#if opened.has(row.key)}
+              {#each row.members as c (c.id)}
+                {@const d = describe(c)}
+                <li class="folded">
+                  <time datetime={c.observed_at} title={fmtTime(c.observed_at)}>
+                    {fmtAgo(c.observed_at)}
+                  </time>
+                  <span class="sign {d.cls}">{d.sign}</span>
+                  <span class="body"><span class="what">{d.text}</span></span>
+                </li>
+              {/each}
+            {/if}
+          {:else}
+            {@const d = describe(row.change)}
+            <li>
+              <time datetime={row.change.observed_at} title={fmtTime(row.change.observed_at)}>
+                {fmtAgo(row.change.observed_at)}
+              </time>
+              <span class="sign {d.cls}">{d.sign}</span>
+              <span class="body">
+                <a href={trackerPath(row.change.tracker)}>{row.change.tracker}</a>
+                <span class="what">{d.text}</span>
+              </span>
+            </li>
+          {/if}
         {/each}
       </ul>
     {/if}

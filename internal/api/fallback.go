@@ -19,9 +19,13 @@ import (
 // How much history the no-JS page carries. The UI asks for 200 changes; a page
 // meant to be read in a terminal wants less.
 const (
-	fallbackChanges = 50
-	fallbackRecords = 40
-	fallbackLimit   = 20
+	// Rows printed, and how much feed is read to fill them. A week of the live
+	// feed folds about five to one, so 500 entries make 50 rows with room to
+	// spare.
+	fallbackChanges  = 50
+	fallbackFeedRead = 500
+	fallbackRecords  = 40
+	fallbackLimit    = 20
 )
 
 // fallbackDoc is the page for a client that runs no JS: the present state and
@@ -118,7 +122,7 @@ func (s *Server) dashboardSections(ctx context.Context, d *doc) error {
 	if err != nil {
 		return err
 	}
-	changes, err := s.Store.RecentChanges(ctx, time.Time{}, fallbackChanges)
+	changes, err := s.Store.RecentChanges(ctx, time.Time{}, fallbackFeedRead)
 	if err != nil {
 		return err
 	}
@@ -160,18 +164,113 @@ func (s *Server) dashboardSections(ctx context.Context, d *doc) error {
 		d.Sections = append(d.Sections, feed)
 		return nil
 	}
-	feed.Notes = []string{fmt.Sprintf("The newest %d of %d. /api/changes carries the rest.",
-		len(changes), stats.Changes)}
+	rows := collapseChanges(changes, minRun)
+	folded := len(changes) - len(rows)
+	if len(rows) > fallbackChanges {
+		rows = rows[:fallbackChanges]
+	}
+	feed.Notes = []string{fmt.Sprintf("The newest %d rows of %d changes on record.",
+		len(rows), stats.Changes)}
+	if folded > 0 {
+		feed.Notes = append(feed.Notes, "A name that kept changing the same thing is one row, "+
+			"counted. /api/changes carries every entry unfolded.")
+	}
 	feed.Table = &table{Head: []string{"When", "Tracker", "Change"}}
-	for _, c := range changes {
+	for _, r := range rows {
 		feed.Table.Rows = append(feed.Table.Rows, []cell{
-			txt(stamp(c.ObservedAt)),
-			link(c.Tracker, trackerHref(c.Tracker)),
-			txt(describeChange(c)),
+			txt(stamp(r.Latest)),
+			link(r.Tracker, trackerHref(r.Tracker)),
+			txt(r.Text),
 		})
 	}
 	d.Sections = append(d.Sections, feed)
 	return nil
+}
+
+// minRun is how many entries a name must repeat before they fold. Two of a kind
+// are a pair of facts; three are a habit. Mirrors the default in
+// collapseChanges in web/src/lib/api.js.
+const minRun = 3
+
+// feedRow is one line of the folded feed: a single change, or the run of them a
+// name repeated.
+type feedRow struct {
+	Tracker string
+	Latest  time.Time
+	Text    string
+}
+
+// churnGroup is what a repeated change is repeating, or "" for a type that
+// stands alone. Mirrors churnGroup in web/src/lib/api.js.
+func churnGroup(t string) string {
+	switch t {
+	case store.ChangeIPAdded, store.ChangeIPRemoved:
+		return "address"
+	case store.ChangePrefixAdded, store.ChangePrefixRemoved:
+		return "prefix"
+	case store.ChangeIPsRolling, store.ChangeIPsStable:
+		return "rolling"
+	case store.ChangeTrackerUp, store.ChangeTrackerDown, store.ChangeTrackerPartial:
+		return "reach"
+	case store.ChangeStatusChanged:
+		return "dns"
+	case store.ChangeBEP34Added, store.ChangeBEP34Removed, store.ChangeBEP34Changed:
+		return "bep34"
+	}
+	return ""
+}
+
+// churnText names a folded run. Mirrors churnText in web/src/lib/api.js, spelled
+// out because a terminal has no tooltip to hold the detail.
+func churnText(group string, n int) string {
+	switch group {
+	case "address":
+		return fmt.Sprintf("%d address changes", n)
+	case "prefix":
+		return fmt.Sprintf("%d prefix changes", n)
+	case "rolling":
+		return fmt.Sprintf("rolled and settled %d times", n)
+	case "reach":
+		return fmt.Sprintf("answering verdict flapped %d times", n)
+	case "dns":
+		return fmt.Sprintf("DNS status flapped %d times", n)
+	case "bep34":
+		return fmt.Sprintf("BEP 34 record changed %d times", n)
+	}
+	return ""
+}
+
+// collapseChanges folds each name's repeated churn into one row, placed where
+// its newest member was. Input is newest first, and so is the result. Mirrors
+// collapseChanges in web/src/lib/api.js.
+func collapseChanges(changes []store.Change, minRun int) []feedRow {
+	type key struct {
+		tracker int64
+		group   string
+	}
+	counts := map[key]int{}
+	for _, c := range changes {
+		if g := churnGroup(c.Type); g != "" {
+			counts[key{c.TrackerID, g}]++
+		}
+	}
+
+	rows := make([]feedRow, 0, len(changes))
+	seen := map[key]bool{}
+	for _, c := range changes {
+		g := churnGroup(c.Type)
+		k := key{c.TrackerID, g}
+		if g == "" || counts[k] < minRun {
+			rows = append(rows, feedRow{c.Tracker, c.ObservedAt, describeChange(c)})
+			continue
+		}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		rows = append(rows, feedRow{c.Tracker, c.ObservedAt, churnText(g, counts[k])})
+	}
+	return rows
 }
 
 // trackerListSections mirrors Trackers.svelte, minus the addresses and the

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pawal/torrent-tracker/internal/store"
 )
@@ -313,5 +314,108 @@ func TestRenderDocTextSpellsOutNavLinks(t *testing.T) {
 	}
 	if !strings.Contains(out, "JSON API (/api/trackers)") {
 		t.Errorf("footer link not spelled out:\n%s", out)
+	}
+}
+
+// Two thirds of a week of the live feed is eight names oscillating: one toggled
+// its BEP 34 record 58 times, another swapped between two prefixes 71 times.
+// Folded, each is one row placed where its newest entry was, so the feed still
+// reads by when something last happened.
+func TestCollapseChangesFoldsARepeatedRun(t *testing.T) {
+	base := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	at := func(minsAgo int) time.Time { return base.Add(-time.Duration(minsAgo) * time.Minute) }
+
+	// Newest first, as the store returns them. The toggle interleaves with a
+	// second name, which is what stops a run being adjacent in the feed.
+	changes := []store.Change{
+		{TrackerID: 1, Tracker: "toggler", Type: store.ChangeBEP34Changed, ObservedAt: at(1)},
+		{TrackerID: 2, Tracker: "quiet", Type: store.ChangeTrackerAdded, ObservedAt: at(2)},
+		{TrackerID: 1, Tracker: "toggler", Type: store.ChangeBEP34Changed, ObservedAt: at(3)},
+		{TrackerID: 1, Tracker: "toggler", Type: store.ChangeBEP34Changed, ObservedAt: at(4)},
+		{TrackerID: 2, Tracker: "quiet", Type: store.ChangeIPAdded, IP: "1.2.3.4", ObservedAt: at(5)},
+		{TrackerID: 2, Tracker: "quiet", Type: store.ChangeIPRemoved, IP: "1.2.3.4", ObservedAt: at(6)},
+	}
+
+	rows := collapseChanges(changes, minRun)
+	if len(rows) != 4 {
+		t.Fatalf("got %d rows, want 4: %+v", len(rows), rows)
+	}
+	if rows[0].Tracker != "toggler" || rows[0].Text != "BEP 34 record changed 3 times" {
+		t.Errorf("row 0 = %+v, want the folded run", rows[0])
+	}
+	// Placed at its newest member, not at the oldest one it covers.
+	if !rows[0].Latest.Equal(at(1)) {
+		t.Errorf("row 0 dated %v, want %v", rows[0].Latest, at(1))
+	}
+	// A pair is two facts, not a habit: under the threshold nothing folds.
+	if rows[2].Text != "+ 1.2.3.4" || rows[3].Text != "- 1.2.3.4" {
+		t.Errorf("rows 2-3 = %+v %+v, want the pair unfolded", rows[2], rows[3])
+	}
+}
+
+// A name and a group make the key: two names flapping the same way are two
+// rows, and one name flapping two different ways is also two.
+func TestCollapseChangesKeysOnNameAndGroup(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	var changes []store.Change
+	for i := range 3 {
+		for _, tc := range []struct {
+			id   int64
+			name string
+			typ  string
+		}{
+			{1, "a", store.ChangeStatusChanged},
+			{2, "b", store.ChangeStatusChanged},
+			{1, "a", store.ChangeIPAdded},
+		} {
+			changes = append(changes, store.Change{
+				TrackerID: tc.id, Tracker: tc.name, Type: tc.typ,
+				ObservedAt: now.Add(-time.Duration(i) * time.Hour),
+			})
+		}
+	}
+
+	rows := collapseChanges(changes, minRun)
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3: %+v", len(rows), rows)
+	}
+	want := map[string]bool{
+		"a DNS status flapped 3 times": true,
+		"b DNS status flapped 3 times": true,
+		"a 3 address changes":          true,
+	}
+	for _, r := range rows {
+		if !want[r.Tracker+" "+r.Text] {
+			t.Errorf("unexpected row %q", r.Tracker+" "+r.Text)
+		}
+	}
+}
+
+// Every type that can repeat needs its wording, or a folded row renders blank.
+func TestChurnTextCoversEveryGroup(t *testing.T) {
+	for _, typ := range []string{
+		store.ChangeIPAdded, store.ChangeIPRemoved,
+		store.ChangePrefixAdded, store.ChangePrefixRemoved,
+		store.ChangeIPsRolling, store.ChangeIPsStable,
+		store.ChangeTrackerUp, store.ChangeTrackerDown, store.ChangeTrackerPartial,
+		store.ChangeStatusChanged,
+		store.ChangeBEP34Added, store.ChangeBEP34Removed, store.ChangeBEP34Changed,
+	} {
+		g := churnGroup(typ)
+		if g == "" {
+			t.Errorf("%s has no churn group", typ)
+			continue
+		}
+		if churnText(g, 3) == "" {
+			t.Errorf("group %q from %s has no wording", g, typ)
+		}
+	}
+	// A one-off fact never folds, so it must not claim a group.
+	for _, typ := range []string{
+		store.ChangeTrackerAdded, store.ChangeTrackerRetired, store.ChangeParked,
+	} {
+		if g := churnGroup(typ); g != "" {
+			t.Errorf("%s folds as %q, want a row of its own", typ, g)
+		}
 	}
 }

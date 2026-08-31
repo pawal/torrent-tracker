@@ -57,6 +57,37 @@ stays, and re-adding it gives it a fresh month. So is one that resolves fine
 while no probe has ever answered on it — see below. Having worked even once keeps
 a name; going quiet is a different fact. `-1` disables either.
 
+## A feed of facts, not of flapping
+
+A week of the live feed is 820 entries from 60 names, and two thirds of it is
+eight names oscillating. One toggles its BEP 34 record between
+`UDP:6969` and `UDP:6969 TCP:80` — 29 times each way. Another swaps between two
+prefixes 71 times. A third goes `ok → nxdomain → ok` ten times over.
+
+Each of those is one fact about a host, so the feed folds a run into one row:
+
+```
+5h ago   atrack.pow7.com          BEP 34 record changed 58×   over 6d
+6h ago   tracker.torrent.eu.org   71 prefix changes           over 7d
+```
+
+That takes the week from 820 rows to 108, which is why the dashboard can now
+show seven days where it used to reach a day and a half. The count opens the
+row; "show all" turns folding off altogether.
+
+**A name and a kind of change make a run.** The types that fold together are
+the ones a flap alternates between — `ip_added` with `ip_removed`,
+`prefix_added` with `prefix_removed`, `tracker_up` with `tracker_down`,
+`ips_rolling` with `ips_stable`. Two names flapping the same way are two rows.
+A `tracker_added` or a `parked` never folds: those are one-off facts.
+
+**Three deep, not two.** Two of a kind are a pair of facts; three are a habit.
+
+**A run is placed where its newest entry was**, so the feed still reads by when
+something last happened rather than by when a flap started. `/api/changes`
+serves every entry unfolded, and `collapseChanges` in `web/src/lib/api.js` is
+mirrored in `internal/api/fallback.go` for the no-JS page.
+
 ## Rolling addresses
 
 A tracker behind a CDN answers with different edge addresses every TTL, and
@@ -632,7 +663,7 @@ before it paints — and puts it back if the bundle fails to load.
 
 | Page | Rendered |
 | --- | --- |
-| `/` | the counters, the resolution rollup and the last 50 changes |
+| `/` | the counters, the resolution rollup and the last 50 feed rows |
 | `/trackers` | every name with its DNS status, whether it answers and its ASes |
 | `/networks` | reachability, software, shared addresses, ASes, RIRs, countries |
 | `/t/{name}` | status, per-address probe verdicts, address intervals, change log |

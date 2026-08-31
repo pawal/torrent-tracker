@@ -18,7 +18,12 @@ export const getStats = () => get('/api/stats')
 export const getTrackers = () => get('/api/trackers')
 export const getTracker = (name, days = 30) =>
   get(`/api/trackers/${encodeURIComponent(name)}?days=${days}`)
-export const getChanges = (limit = 200) => get(`/api/changes?limit=${limit}`)
+export const getChanges = (limit = 200, sinceDays = 0) => {
+  const since = sinceDays
+    ? `&since=${new Date(Date.now() - sinceDays * 86_400_000).toISOString()}`
+    : ''
+  return get(`/api/changes?limit=${limit}${since}`)
+}
 export const getRuns = (limit = 10) => get(`/api/runs?limit=${limit}`)
 export const getNetworks = (limit = 20) => get(`/api/networks?limit=${limit}`)
 export const getVersion = () => get('/api/version')
@@ -283,6 +288,97 @@ export function flag(cc) {
   return String.fromCodePoint(
     ...cc.toUpperCase().split('').map((c) => base + c.charCodeAt(0)),
   )
+}
+
+// What a repeated change is repeating. A week of the live feed is 820 entries
+// from 60 names, and two thirds of it is eight names oscillating: one toggles
+// its BEP 34 record 29 times each way, another swaps between two prefixes 71
+// times. Each of those is one fact about a host, not 58 pieces of news, so the
+// feed folds a run into a single row. The types that fold together are the ones
+// a flap alternates between; the rest are one-off facts and never fold.
+const churnGroups = {
+  ip_added: 'address',
+  ip_removed: 'address',
+  prefix_added: 'prefix',
+  prefix_removed: 'prefix',
+  ips_rolling: 'rolling',
+  ips_stable: 'rolling',
+  tracker_up: 'reach',
+  tracker_down: 'reach',
+  tracker_partial: 'reach',
+  status_changed: 'dns',
+  bep34_added: 'bep34',
+  bep34_removed: 'bep34',
+  bep34_changed: 'bep34',
+}
+
+const churnText = {
+  address: (n) => `${n} address changes`,
+  prefix: (n) => `${n} prefix changes`,
+  rolling: (n) => `rolled and settled ${n}×`,
+  reach: (n) => `answering verdict flapped ${n}×`,
+  dns: (n) => `DNS status flapped ${n}×`,
+  bep34: (n) => `BEP 34 record changed ${n}×`,
+}
+
+/** Mirrors churnGroup in internal/api/fallback.go. */
+export function churnGroup(type) {
+  return churnGroups[type] ?? ''
+}
+
+/**
+ * The feed with each name's repeated churn folded into one row. Input is
+ * newest first; a run is placed where its newest member was, so the feed still
+ * reads by when something last happened.
+ *
+ * Rows are `{ kind: 'one', change }` or `{ kind: 'run', ... members }`, the
+ * latter carrying every folded change so a row can be opened.
+ */
+export function collapseChanges(changes, minRun = 3) {
+  const runs = new Map()
+  for (const c of changes ?? []) {
+    const group = churnGroup(c.type)
+    if (!group) continue
+    const key = `${c.tracker_id ?? c.tracker}|${group}`
+    const run = runs.get(key)
+    if (run) run.push(c)
+    else runs.set(key, [c])
+  }
+
+  const rows = []
+  const emitted = new Set()
+  for (const c of changes ?? []) {
+    const group = churnGroup(c.type)
+    const key = `${c.tracker_id ?? c.tracker}|${group}`
+    const members = group ? runs.get(key) : null
+    if (!members || members.length < minRun) {
+      rows.push({ kind: 'one', key: `c${c.id}`, change: c })
+      continue
+    }
+    if (emitted.has(key)) continue
+    emitted.add(key)
+    rows.push({
+      kind: 'run',
+      key: `r${key}`,
+      tracker: c.tracker,
+      group,
+      count: members.length,
+      // Newest first, so the run opened with its last member.
+      latest: c.observed_at,
+      earliest: members[members.length - 1].observed_at,
+      text: churnText[group](members.length),
+      members,
+    })
+  }
+  return rows
+}
+
+/** How long a folded run has been going: "over 6d", or "" under an hour. */
+export function fmtSpan(earliest, latest) {
+  const mins = Math.floor((new Date(latest).getTime() - new Date(earliest).getTime()) / 60_000)
+  if (!Number.isFinite(mins) || mins < 60) return ''
+  if (mins < 1440) return `over ${Math.floor(mins / 60)}h`
+  return `over ${Math.floor(mins / 1440)}d`
 }
 
 /** Render a change the way the original Perl report did: +/- and a reason. */

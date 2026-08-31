@@ -66,6 +66,16 @@
           after a month, history kept.
         </p>
       {/if}
+      {#if data.probes.parked > 0}
+        <p class="muted">
+          {data.probes.parked} parked
+          {data.probes.parked === 1 ? 'name is' : 'names are'} left out of these totals and of
+          the networks below. They resolve only to a parking host, so whatever answers there is
+          that host's — one of them runs a tracker on the port they advertise, and counting it
+          credited the parking provider with hosting trackers.
+          <a href="/trackers#other">They are listed under the tracker list.</a>
+        </p>
+      {/if}
     {/if}
   </div>
 

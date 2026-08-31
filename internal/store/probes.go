@@ -431,7 +431,7 @@ func (s *Store) ReachSummary(ctx context.Context) (map[Reach]int, error) {
 	out := map[Reach]int{}
 	err := s.eachRow(ctx, `
 		SELECT reach, COUNT(*) FROM trackers
-		WHERE enabled = 1 AND control = 0 GROUP BY reach`, nil, func(sc scanner) error {
+		WHERE `+trackerScope+` GROUP BY reach`, nil, func(sc scanner) error {
 		var (
 			r Reach
 			n int
@@ -466,6 +466,9 @@ type EndpointCoverage struct {
 	// NeverResolved is how many have never had an address at all. They read
 	// unknown for a different reason than the ones missing an endpoint.
 	NeverResolved int `json:"never_resolved"`
+	// Parked is how many names these totals leave out for resolving only to a
+	// parking host. Whatever answers there is that host's, not a tracker's.
+	Parked int `json:"parked"`
 }
 
 // ProbeCoverage separates "not probed yet" from "probed and dead", which the
@@ -473,19 +476,20 @@ type EndpointCoverage struct {
 func (s *Store) ProbeCoverage(ctx context.Context) (EndpointCoverage, error) {
 	var c EndpointCoverage
 	err := s.db.QueryRowContext(ctx, `
-		SELECT (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0),
+		SELECT (SELECT COUNT(*) FROM trackers WHERE `+trackerScope+`),
 		       (SELECT COUNT(DISTINCT e.tracker_id) FROM endpoints e
 		          JOIN trackers t ON t.id = e.tracker_id
-		         WHERE t.enabled = 1 AND t.control = 0 AND e.retired_at IS NULL),
+		         WHERE `+trackerScopeT+` AND e.retired_at IS NULL),
 		       (SELECT COUNT(*) FROM endpoints e
 		          JOIN trackers t ON t.id = e.tracker_id
-		         WHERE t.enabled = 1 AND t.control = 0 AND e.retired_at IS NULL),
+		         WHERE `+trackerScopeT+` AND e.retired_at IS NULL),
 		       (SELECT COUNT(*) FROM trackers
-		         WHERE enabled = 1 AND control = 0 AND reach_checked_at IS NOT NULL),
+		         WHERE `+trackerScope+` AND reach_checked_at IS NOT NULL),
 		       (SELECT COUNT(*) FROM trackers t
-		         WHERE t.enabled = 1 AND t.control = 0
-		           AND NOT EXISTS (SELECT 1 FROM ip_records r WHERE r.tracker_id = t.id))`).
-		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed, &c.NeverResolved)
+		         WHERE `+trackerScopeT+`
+		           AND NOT EXISTS (SELECT 1 FROM ip_records r WHERE r.tracker_id = t.id)),
+		       (SELECT COUNT(*) FROM trackers WHERE enabled = 1 AND control = 0 AND parked = 1)`).
+		Scan(&c.Trackers, &c.WithEndpoints, &c.Endpoints, &c.Probed, &c.NeverResolved, &c.Parked)
 	if err != nil {
 		return c, err
 	}
@@ -503,7 +507,7 @@ func (s *Store) fingerprintCounts(ctx context.Context) (fingerprinted, named int
 		FROM probes p
 		JOIN endpoints e ON e.id = p.endpoint_id
 		JOIN trackers t ON t.id = e.tracker_id
-		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''`, nil, func(sc scanner) error {
+		WHERE `+trackerScopeT+` AND p.signature != ''`, nil, func(sc scanner) error {
 		var (
 			trackerID         int64
 			sig, kind, server string
@@ -594,7 +598,7 @@ func (s *Store) SoftwareStats(ctx context.Context, limit int) ([]SoftwareStat, e
 		FROM probes p
 		JOIN endpoints e ON e.id = p.endpoint_id
 		JOIN trackers t ON t.id = e.tracker_id
-		WHERE t.enabled = 1 AND t.control = 0 AND p.signature != ''`, nil, func(sc scanner) error {
+		WHERE `+trackerScopeT+` AND p.signature != ''`, nil, func(sc scanner) error {
 		var (
 			sig, kind             string
 			trackerID, endpointID int64

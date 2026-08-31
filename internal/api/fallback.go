@@ -368,6 +368,12 @@ func (s *Server) networkSections(ctx context.Context, d *doc) error {
 				"%d have never resolved to an address at all, so there has never been anything to probe. "+
 					"They are retried daily and retired after a month, history kept.", probes.NeverResolved))
 		}
+		if probes.Parked > 0 {
+			sec.Notes = append(sec.Notes, fmt.Sprintf(
+				"%d parked names are left out of these totals and of the networks below. They resolve "+
+					"only to a parking host, so whatever answers there is that host's rather than a "+
+					"tracker's. They are listed on /trackers.", probes.Parked))
+		}
 	}
 	d.Sections = append(d.Sections, sec)
 

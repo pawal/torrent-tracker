@@ -762,3 +762,76 @@ func TestProbeHistoryWindowAndPruning(t *testing.T) {
 		t.Errorf("%d intervals survived the prune, want 2", len(left))
 	}
 }
+
+// The four parked names on the live registry all answer, because the host they
+// are parked on runs a tracker of its own on the port they advertise. So they
+// counted towards "88 of 276 names answer the tracker protocol" while being
+// somebody else's tracker, not one of the names on the list. A parked name
+// stays on the registry and keeps its history; it leaves the rollups.
+func TestParkedNamesLeaveTheTrackerRollups(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	real, _ := newTrackerWithEndpoint(t, s, "real.example.com")
+	must(t, s.ApplyPlan(ctx, real, Plan{Status: StatusOK, Actions: adds("1.2.3.4")}, now))
+	if _, _, err := s.SetReach(ctx, real, ReachLive, "up", now); err != nil {
+		t.Fatal(err)
+	}
+
+	parked, _ := newTrackerWithEndpoint(t, s, "parked.example.com")
+	must(t, s.ApplyPlan(ctx, parked, Plan{Status: StatusOK, Actions: adds("34.66.57.33")}, now))
+	if _, _, err := s.SetReach(ctx, parked, ReachLive, "up", now); err != nil {
+		t.Fatal(err)
+	}
+
+	reach, err := s.ReachSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reach[ReachLive] != 2 {
+		t.Fatalf("before parking, live = %d, want both names", reach[ReachLive])
+	}
+
+	if _, err := s.SetParked(ctx, parked, true, "parked", now); err != nil {
+		t.Fatal(err)
+	}
+
+	if reach, err = s.ReachSummary(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if reach[ReachLive] != 1 {
+		t.Errorf("live = %d, want only the tracker", reach[ReachLive])
+	}
+
+	cov, err := s.ProbeCoverage(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cov.Trackers != 1 || cov.WithEndpoints != 1 {
+		t.Errorf("coverage = %d trackers, %d with endpoints; want 1 and 1",
+			cov.Trackers, cov.WithEndpoints)
+	}
+
+	// Still on the registry, and still counted as parked: dropping it from the
+	// rollup is not the same as forgetting it.
+	st, err := s.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.EnabledTrackers != 2 || st.Parked != 1 {
+		t.Errorf("stats = %d enabled, %d parked; want 2 and 1", st.EnabledTrackers, st.Parked)
+	}
+
+	// Its addresses are the parking host's, so they no longer place a tracker
+	// in that host's network.
+	nets, err := s.TopNetworks(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range nets {
+		if n.Trackers != 1 {
+			t.Errorf("network %s counts %d trackers, want the parked one dropped", n.Key, n.Trackers)
+		}
+	}
+}

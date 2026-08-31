@@ -283,7 +283,7 @@ const activeIPCount = `SELECT COUNT(DISTINCT ip) FROM ip_records WHERE active = 
 // deadTrackers counts the enabled names nothing answers on, which the last
 // answer then splits into never a tracker and gone quiet.
 const deadTrackers = `SELECT COUNT(*) FROM trackers
-	WHERE enabled = 1 AND control = 0 AND reach = 'dead'`
+	WHERE ` + trackerScope + ` AND reach = 'dead'`
 
 // Stats gathers dashboard counters.
 func (s *Store) Stats(ctx context.Context) (Stats, error) {

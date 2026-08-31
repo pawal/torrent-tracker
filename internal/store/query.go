@@ -5,6 +5,17 @@ import (
 	"fmt"
 )
 
+// trackerScope is what counts as a tracker for a rollup, and trackerScopeT the
+// same with the table aliased. Three things are on the registry without being
+// trackers: a disabled name is history, a control name is a parking canary, and
+// a parked name is an expired domain pointed somewhere else. Counting the last
+// of those held four names in the reachability rollup whose verdicts belong to
+// the host they were parked on, not to a tracker.
+const (
+	trackerScope  = `enabled = 1 AND control = 0 AND parked = 0`
+	trackerScopeT = `t.enabled = 1 AND t.control = 0 AND t.parked = 0`
+)
+
 // scanner is whatever a query hands a row to: *sql.Row or *sql.Rows.
 type scanner interface{ Scan(...any) error }
 

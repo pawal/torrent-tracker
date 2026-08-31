@@ -279,10 +279,13 @@ const holderLabel = `COALESCE(NULLIF(i.as_name, ''), NULLIF(i.org, ''), i.networ
 const recordInfoJoin = `JOIN ip_info i ON (r.is_prefix = 0 AND i.ip = r.ip)
 		                     OR (r.is_prefix = 1 AND i.prefix = r.ip)`
 
-// listedScope holds a rollup to the registry every other view shows. A retired
-// name keeps its addresses, and counting it stranded the totals.
+// listedScope holds a rollup to the trackers every other view shows. A retired
+// name keeps its addresses, and counting it stranded the totals. A parked name's
+// addresses are the parking host's, so counting those credited a parking
+// provider's AS with hosting trackers.
 const listedScope = `JOIN trackers t ON t.id = r.tracker_id
-		                     WHERE r.active = 1 AND t.enabled = 1 AND t.control = 0`
+		                     WHERE r.active = 1 AND t.enabled = 1 AND t.control = 0
+		                       AND t.parked = 0`
 
 // NetworkStat aggregates active addresses by network or registry.
 type NetworkStat struct {

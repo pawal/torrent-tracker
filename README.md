@@ -140,6 +140,19 @@ Control names are resolved every pass but stay out of the listings, the counts
 and the feed. A name answering with a parking address *and* one of its own is
 left alone.
 
+**A parked name can still answer.** The host the current cluster is parked on
+runs a tracker of its own — Chihaya, on the `:6969` these names advertise — so
+all four parked names probe as live or partial, one of them at 100% uptime.
+That is somebody else's tracker answering for an expired domain, not one of the
+names on the list, so a parked name is left out of the reachability rollup, the
+software table and the network, RIR and country breakdowns. It keeps its place
+on the registry, its history and its own page, and it is still probed: parking
+is a verdict the collector revisits every pass, and a name that stops resolving
+only to the parking host stops being parked.
+
+Parked names appear on the tracker list below the trackers, under **Not
+trackers**, with the reason each one is there.
+
 Catching an operator by its addresses survives renumbering, but only reaches
 operators a control name points at. Names parked elsewhere need `trackerd rm`,
 or promote one of them to a control name to catch its cluster.

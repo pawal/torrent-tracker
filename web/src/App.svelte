@@ -3,6 +3,7 @@
   import Trackers from './lib/Trackers.svelte'
   import TrackerDetail from './lib/TrackerDetail.svelte'
   import Networks from './lib/Networks.svelte'
+  import Lists from './lib/Lists.svelte'
   import NotFound from './lib/NotFound.svelte'
   import ThemeToggle from './lib/ThemeToggle.svelte'
   import Logo from './lib/Logo.svelte'
@@ -59,6 +60,7 @@
         Trackers
       </a>
       <a href="/networks" class:active={route.name === 'networks'}>Networks</a>
+      <a href="/lists" class:active={route.name === 'lists'}>Lists</a>
     </nav>
     <a
       class="icon-link"
@@ -92,6 +94,8 @@
     <Trackers country={route.country} />
   {:else if route.name === 'networks'}
     <Networks />
+  {:else if route.name === 'lists'}
+    <Lists />
   {:else if route.name === 'notfound'}
     <NotFound path={loc} />
   {:else}

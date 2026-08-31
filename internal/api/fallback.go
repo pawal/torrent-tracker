@@ -52,6 +52,8 @@ func (s *Server) fallbackDoc(ctx context.Context, status int, path, country stri
 		err = s.trackerListSections(ctx, &d, country)
 	case path == pathNetworks:
 		err = s.networkSections(ctx, &d)
+	case path == pathLists:
+		err = s.listSections(ctx, &d)
 	default:
 		err = s.dashboardSections(ctx, &d)
 	}
@@ -81,6 +83,8 @@ func pageHeading(path, country string, t *store.Tracker) string {
 		return "Known trackers"
 	case path == pathNetworks:
 		return "Networks"
+	case path == pathLists:
+		return "Announce lists"
 	case path == pathDashboard:
 		return "torrent-tracker"
 	}
@@ -93,6 +97,7 @@ func navCells(path string) []cell {
 		{"Changes", pathDashboard},
 		{"Trackers", pathTrackers},
 		{"Networks", pathNetworks},
+		{"Lists", pathLists},
 	}
 	out := make([]cell, 0, len(pages))
 	for _, p := range pages {
@@ -503,6 +508,66 @@ func (s *Server) networkSections(ctx context.Context, d *doc) error {
 		})
 	}
 	d.Sections = append(d.Sections, byCC)
+	return nil
+}
+
+// listSections mirrors Lists.svelte. A terminal reader came for the URLs, so
+// the stable list is printed rather than described, and the variants are named
+// as the endpoints that serve them.
+func (s *Server) listSections(ctx context.Context, d *doc) error {
+	spec, _ := listSpecFor("stable")
+	until := time.Now().UTC()
+	entries, err := s.Store.ListEndpoints(ctx, until.AddDate(0, 0, -listWindowDays), until)
+	if err != nil {
+		return err
+	}
+
+	sec := section{Heading: "Stable list",
+		Notes: []string{
+			"Uptime of 95% or better over 30 days, tracked for at least 10 days, and answering " +
+				"now. Parked names, names publishing a BEP 34 record that denies BitTorrent, and " +
+				"names nothing has ever answered on are never listed, however well they resolve.",
+		}}
+
+	// The same clamp /api/list applies: an age floor longer than the database
+	// has existed would drop every name.
+	if held := historyDays(entries, until); spec.minAge > held {
+		sec.Notes = append(sec.Notes, fmt.Sprintf(
+			"Age floor relaxed from %d to %d days: that is all the history held.", spec.minAge, held))
+		spec.minAge = held
+	}
+	cutoff := until.AddDate(0, 0, -spec.minAge)
+
+	urls := &table{Head: []string{"Announce URL"}}
+	for _, e := range entries {
+		if !spec.wants(e) || (spec.minAge > 0 && e.Added.After(cutoff)) {
+			continue
+		}
+		urls.Rows = append(urls.Rows, []cell{txt(e.URL)})
+	}
+	if len(urls.Rows) == 0 {
+		sec.Notes = append(sec.Notes, "Nothing qualifies yet: "+spec.terms(listWindowDays)+".")
+	} else {
+		sec.Table = urls
+		sec.Notes = append(sec.Notes, fmt.Sprintf("%d endpoints. /api/list serves the same "+
+			"list blank-line delimited, which pastes straight into a client.", len(urls.Rows)))
+	}
+	d.Sections = append(d.Sections, sec)
+
+	d.Sections = append(d.Sections, section{
+		Heading: "The other lists",
+		Notes: []string{"Each is plain text, one URL per entry. days, min_age_days, per_as, live, " +
+			"include_ipv4_only_trackers and include_ipv6_only_trackers are query parameters on any " +
+			"of them."},
+		Defs: []def{
+			{"/api/list", "the stable list, the one worth recommending"},
+			{"/api/list/live", "every endpoint answering right now, however new"},
+			{"/api/list/udp", "the stable list, UDP only"},
+			{"/api/list/http", "the stable list, HTTP and HTTPS"},
+			{"/api/list/{0-100}", "uptime at or above that percentage, still answering"},
+			{"/api/list/all", "every endpoint on record, dead or alive"},
+		},
+	})
 	return nil
 }
 

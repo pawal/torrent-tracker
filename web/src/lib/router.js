@@ -24,6 +24,7 @@ export function parseRoute(pathname, search = '') {
     return { name: 'trackers', country: new URLSearchParams(search).get('country') ?? '' }
   }
   if (path === '/networks') return { name: 'networks' }
+  if (path === '/lists') return { name: 'lists' }
 
   const detail = path.match(/^\/t\/([^/]+)$/)
   if (detail) {

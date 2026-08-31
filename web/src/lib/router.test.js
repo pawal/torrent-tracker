@@ -13,12 +13,14 @@ test('canonicalPath drops a trailing slash but keeps the root', () => {
   assert.equal(canonicalPath(''), '/')
 })
 
-test('parseRoute maps the three top-level pages', () => {
+test('parseRoute maps the four top-level pages', () => {
   assert.deepEqual(parseRoute('/'), { name: 'dashboard' })
   assert.deepEqual(parseRoute('/trackers'), { name: 'trackers', country: '' })
   assert.deepEqual(parseRoute('/networks'), { name: 'networks' })
+  assert.deepEqual(parseRoute('/lists'), { name: 'lists' })
   // The trailing-slash form still renders, so a stray link is not a dead end.
   assert.deepEqual(parseRoute('/networks/'), { name: 'networks' })
+  assert.deepEqual(parseRoute('/lists/'), { name: 'lists' })
 })
 
 test('parseRoute reads the country filter off the query', () => {

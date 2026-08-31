@@ -9,7 +9,7 @@ const metaFor = (path, search) => pageMeta(parseRoute(path, search))
 // Two pages sharing a title are two pages a search engine cannot tell apart,
 // which is the whole reason the static one had to go.
 test('every route has its own title', () => {
-  const paths = ['/', '/trackers', '/networks', '/t/a.example.com', '/nope']
+  const paths = ['/', '/trackers', '/networks', '/lists', '/t/a.example.com', '/nope']
   const titles = paths.map((p) => metaFor(p).title)
   assert.equal(new Set(titles).size, paths.length, titles.join(' | '))
 })

@@ -115,6 +115,7 @@ func TestSitemapListsEveryTracker(t *testing.T) {
 		"http://example.com/",
 		"http://example.com/trackers",
 		"http://example.com/networks",
+		"http://example.com/lists",
 		"http://example.com/t/a.example.com",
 		"http://example.com/t/b.example.com",
 	}

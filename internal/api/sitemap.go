@@ -51,8 +51,8 @@ type urlset struct {
 	URLs    []sitemapURL `xml:"url"`
 }
 
-// handleSitemap lists the three top pages and one per live tracker. Country
-// views are subsets, reachable by link, and left out.
+// handleSitemap lists the top pages and one per live tracker. Country views are
+// subsets, reachable by link, and left out.
 func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 	trackers, err := s.Store.ListTrackers(r.Context(), false)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	set := urlset{NS: "http://www.sitemaps.org/schemas/sitemap/0.9"}
-	for _, p := range []string{pathDashboard, pathTrackers, pathNetworks} {
+	for _, p := range []string{pathDashboard, pathTrackers, pathNetworks, pathLists} {
 		set.URLs = append(set.URLs, sitemapURL{Loc: base + p, LastMod: isoDate(newest)})
 	}
 	for _, t := range trackers {

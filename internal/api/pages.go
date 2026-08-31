@@ -17,6 +17,7 @@ const (
 	pathDashboard = "/"
 	pathTrackers  = "/trackers"
 	pathNetworks  = "/networks"
+	pathLists     = "/lists"
 	trackerPrefix = "/t/"
 )
 
@@ -36,7 +37,7 @@ func canonicalPath(p string) string {
 // detail page. It mirrors parseRoute in web/src/lib/router.js.
 func docRoute(p string) (name string, ok bool) {
 	switch p {
-	case pathDashboard, pathTrackers, pathNetworks:
+	case pathDashboard, pathTrackers, pathNetworks, pathLists:
 		return "", true
 	}
 	rest, found := strings.CutPrefix(p, trackerPrefix)

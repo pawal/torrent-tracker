@@ -53,6 +53,13 @@ export function pageMeta(route, tracker = null) {
           'Every tracked BitTorrent tracker: DNS status, whether it answers, origin ' +
           'AS, country and the addresses it resolves to.',
       }
+    case 'lists':
+      return {
+        title: `Announce lists — ${SITE}`,
+        description:
+          'BitTorrent announce URLs worth pasting into a client, filtered by measured ' +
+          'uptime, by transport and by how many trackers share one origin AS.',
+      }
     case 'networks':
       return {
         title: `Networks — ${SITE}`,

@@ -543,6 +543,11 @@ The lists answer the question a BitTorrent client asks: which announce URLs are
 worth using? Plain text, one URL per entry with a blank line after it, so a
 response pastes straight into a client's tracker box.
 
+`/lists` is the same thing as a page: the named lists as buttons, every
+parameter below as a control, the URLs in a box with a copy button, and the API
+path it built shown beside them. It is where a visitor who came for a list
+should land, which is why it is in the nav rather than only in this file.
+
 | Endpoint | Returns |
 | --- | --- |
 | `GET /api/list` | the stable list, the one worth recommending |
@@ -634,6 +639,7 @@ engine, so every tracker page used to be invisible.
 | `/` | the change feed |
 | `/trackers` | every tracker, `?country=XX` for one country |
 | `/networks` | AS, RIR, country and software breakdowns |
+| `/lists` | the announce lists, with the filters as controls |
 | `/t/{name}` | one tracker's history |
 
 The tracker list is in two tables. **Known trackers** carries the names that
@@ -692,6 +698,7 @@ before it paints — and puts it back if the bundle fails to load.
 | `/` | the counters, the resolution rollup and the last 50 feed rows |
 | `/trackers` | trackers, then the names that are not, with DNS status and ASes |
 | `/networks` | reachability, software, shared addresses, ASes, RIRs, countries |
+| `/lists` | the stable list's URLs, and the endpoints serving the variants |
 | `/t/{name}` | status, per-address probe verdicts, address intervals, change log |
 
 **The present state and the feed, never the windowed history.** A month-wide

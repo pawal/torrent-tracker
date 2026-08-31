@@ -853,6 +853,51 @@ button.pill.chip:not(.live):not(.partial):not(.dead) {
   background: var(--surface-2);
 }
 
+/* The list page's controls: a labelled select per filter, wrapping on narrow
+   screens rather than scrolling. */
+.list-controls {
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+}
+.list-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.list-controls label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.list-controls select {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* The URLs themselves: monospace, selectable, and not styled as an input a
+   reader might try to type into. */
+.list-body {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: var(--space-3);
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  padding: var(--space-3);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  resize: vertical;
+}
+
 /* Failed attempts an interval survived, beside the uptime they do not show in.
    Half the answering names carry some, so it has to be quiet. */
 .misses {

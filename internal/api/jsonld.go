@@ -35,6 +35,12 @@ func (s *Server) jsonLD(ctx context.Context, base, path, country string, t *stor
 			page("CollectionPage", base+pathNetworks, title, desc),
 			crumbs(base, crumb{"Networks", base + pathNetworks}))
 
+	case path == pathLists:
+		title, desc := pageMeta(path, "", nil)
+		nodes = append(nodes,
+			page("CollectionPage", base+pathLists, title, desc),
+			crumbs(base, crumb{"Lists", base + pathLists}))
+
 	case t != nil:
 		loc := base + trackerPrefix + url.PathEscape(t.Name)
 		nodes = append(nodes,

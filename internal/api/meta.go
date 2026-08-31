@@ -58,6 +58,11 @@ func pageMeta(path, country string, t *store.Tracker) (title, desc string) {
 			"Every tracked BitTorrent tracker: DNS status, whether it answers, origin " +
 				"AS, country and the addresses it resolves to."
 
+	case path == pathLists:
+		return "Announce lists — torrent-tracker",
+			"BitTorrent announce URLs worth pasting into a client, filtered by measured " +
+				"uptime, by transport and by how many trackers share one origin AS."
+
 	case path == pathNetworks:
 		return "Networks — torrent-tracker",
 			"Where the tracked BitTorrent trackers are hosted: origin AS, RIR, country " +

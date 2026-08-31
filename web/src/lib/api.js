@@ -29,6 +29,13 @@ export const getRuns = (limit = 10) => get(`/api/runs?limit=${limit}`)
 export const getNetworks = (limit = 20) => get(`/api/networks?limit=${limit}`)
 export const getVersion = () => get('/api/version')
 
+/** The announce lists are plain text, not JSON: one URL per entry. */
+export async function getList(path) {
+  const res = await fetch(path, { headers: { Accept: 'text/plain' } })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.text()
+}
+
 /**
  * Probe verdicts per (endpoint, address) on a shared time axis. probe_history
  * holds the closed intervals and probes the open one, so together they cover

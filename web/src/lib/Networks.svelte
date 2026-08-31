@@ -74,9 +74,10 @@
       <h2>By tracker software</h2>
       <p class="sub">
         Fingerprinted for {data.probes.fingerprinted} of {data.probes.trackers} trackers, and
-        {data.probes.named} of those left a fingerprint that names the software. A failure text
-        is a literal from an implementation, but the generic ones were copied between projects,
-        so most only gather trackers that answer alike; a reply shape is only the keys the
+        {data.probes.named} of those left a fingerprint that names the software. A named row was
+        matched against the string in that project's own source; the rest are shown as the
+        literal they are, because the generic wordings were copied between projects and only
+        gather trackers that answer alike. A reply shape is weaker still: it is the keys the
         answer carried, grouped past the ones that come and go with the peers a tracker has to
         report. The <code>Server</code> header is not counted: it names the front end, and is
         <code>cloudflare</code> on most live probes. UDP endpoints disclose nothing, so this
@@ -90,7 +91,9 @@
           <tbody>
             {#each data.software as s (s.kind + s.signature)}
               <tr>
-                <td title={softwareTitle(s)}>{s.name || s.signature}</td>
+                <td title={softwareTitle(s)}>
+                  <span class="sig" class:raw={!s.name}>{s.name || s.signature}</span>
+                </td>
                 <td>
                   {#if describeEvidence(s.kind)}
                     <span class="pill guess">{describeEvidence(s.kind)}</span>

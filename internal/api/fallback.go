@@ -275,7 +275,9 @@ func (s *Server) networkSections(ctx context.Context, d *doc) error {
 	if len(software) > 0 {
 		sw := section{Heading: "By tracker software", Notes: []string{fmt.Sprintf(
 			"Fingerprinted for %d of %d trackers, and %d of those left a fingerprint that names the "+
-				"software. UDP endpoints disclose nothing, so this covers the HTTP ones.",
+				"software. A named row was matched against the string in that project's own source; "+
+				"the rest are the literal a tracker answered with. UDP endpoints disclose nothing, "+
+				"so this covers the HTTP ones.",
 			probes.Fingerprinted, probes.Trackers, probes.Named)},
 			Table: &table{Head: []string{"Software", "Evidence", "Trackers", "Endpoints"}}}
 		for _, x := range software {

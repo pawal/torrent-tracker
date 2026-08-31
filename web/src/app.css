@@ -524,6 +524,23 @@ td.col-name {
   max-width: 14rem;
 }
 
+/* An unnamed software row is a failure text up to 120 characters wide, which
+   sets the column for every named row beside it. The full string is in the
+   title, and in mono so it reads as the literal it is. */
+.sig {
+  display: inline-block;
+  max-width: 26rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.sig.raw {
+  font-family: var(--mono);
+  font-size: var(--text-xs);
+  color: var(--ink-2);
+}
+
 /* --- change feed ------------------------------------------------------- */
 
 .feed {

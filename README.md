@@ -289,11 +289,12 @@ the dict it returned, are literals in its source. Recording them costs no extra
 request:
 
 ```
-26  no info_hash parameter supplied                          (opentracker)
- 7  complete,downloaded,incomplete,interval,min interval,peers
- 4  files
- 3  scrape requires query string
- 1  files,flags,flags.min_request_interval
+27  Your client forgot to send your torrent's info_hash…     (opentracker)
+ 8  no info_hash parameter supplied                          (Chihaya)
+ 7  complete,incomplete,interval
+ 5  scrape requires query string
+ 2  Requested download is not authorized for use with…       (BitTornado)
+ 2  invalid info_hash                                        (bittorrent-tracker)
 ```
 
 18 clusters over 60 of 299 trackers on the seed list. Thin on purpose: UDP
@@ -314,12 +315,24 @@ corrected. The signature is stored and the mapping to a name like `opentracker`
 lives in `software` in `internal/prober/software.go`: extend it there and every
 stored row is reinterpreted. Anything unnamed displays as its signature.
 
-**A fingerprint is not the same as a name**, so the networks page reports two
-numbers. Most signatures only gather trackers that answer alike: the commonest
-one, `Your client forgot to send your torrent's info_hash`, is a literal 24
-trackers share because projects copied each other's wording. It groups them
-without saying what any of them runs, so it counts as fingerprinted and not as
-named.
+**A name is only added against that project's source.** Each key in the table
+cites the file the string was read from — `ot_http.c` for opentracker,
+`frontend/http/parser.go` for Chihaya, `track.py` for BitTornado,
+`lib/server/parse-http.js` for bittorrent-tracker — because two wordings can
+sound interchangeable and belong to different projects. They did: the commonest
+failure text was long assumed to be shared boilerplate and the name
+`opentracker` sat on Chihaya's wording instead, so the 27 trackers actually
+running opentracker showed as an unnamed string.
+
+**A marker matches where an exact key cannot.** Torrust puts the requested
+info_hash and a source path into its failure text, so no two rows are alike;
+`softwareMarkers` holds the prefix instead, and a marker has to be specific
+enough to belong to one project.
+
+**A fingerprint is still not the same as a name**, so the networks page reports
+both numbers. `scrape requires query string` is on five trackers and names none
+of them: the same host answers an announce with `no info_hash`, so the two
+belong to one implementation nobody has identified yet.
 
 **A shape-only tracker is asked once more**, for an announce with the
 `info_hash` left out, since implementations write their own words when they

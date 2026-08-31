@@ -385,7 +385,7 @@ func TestSoftwareStats(t *testing.T) {
 	ctx := t.Context()
 	now := time.Now().UTC()
 
-	const opentracker = "no info_hash parameter supplied"
+	const opentracker = "Your client forgot to send your torrent's info_hash. Please upgrade your client."
 	for _, tc := range []struct {
 		name string
 		sig  string
@@ -426,7 +426,7 @@ func TestSoftwareStats(t *testing.T) {
 			cov.Fingerprinted, cov.Trackers)
 	}
 	// Only opentracker's wording can be put a name to; "missing info_hash"
-	// groups replies that look alike and names nobody.
+	// groups replies that look alike and belongs to no project in the table.
 	if cov.Named != 2 {
 		t.Errorf("named = %d, want 2", cov.Named)
 	}

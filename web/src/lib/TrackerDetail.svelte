@@ -1,7 +1,8 @@
 <script>
   import {
-    getTracker, describe, fmtAgo, fmtTime, fmtDate, describeNetwork, flag,
-    probeLanes, resolutionLane, addressLanes, axisTicks, fmtPercent,
+    getTracker, collapseChanges, describe, fmtAgo, fmtSpan, fmtTime, fmtDate,
+    describeNetwork, flag, probeLanes, resolutionLane, addressLanes, axisTicks,
+    fmtPercent, rollingFamilies, isChurn,
   } from './api.js'
   import { applyMeta } from './meta.js'
 
@@ -15,11 +16,26 @@
   // until asked for in full.
   const addressCap = 25
   let allAddresses = $state(false)
+  // Churn inside a prefix is not news — the model says so, and the feed leaves
+  // it out — so the address table leaves it out too until asked.
+  let showChurn = $state(false)
 
   let data = $state(null)
   let error = $state(null)
   let missing = $state(false)
   let loading = $state(true)
+
+  // The change log folds like the dashboard's feed: a rolling name's log is 164
+  // address churn entries out of 200, all of them the CDN swapping edges.
+  let folded = $state(true)
+  let opened = $state(new Set())
+
+  function toggle(key) {
+    const next = new Set(opened)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    opened = next
+  }
 
   const rollTitle = 'addresses change every run; the prefix is what is tracked'
 
@@ -92,7 +108,12 @@
   const lanes = $derived(axis ? probeLanes(data, axis.from, axis.now) : [])
   const dns = $derived(axis ? resolutionLane(data, axis.from, axis.now) : null)
   const ticks = $derived(axis ? axisTicks(axis.from, axis.now) : [])
-  const addresses = $derived(axis ? addressLanes(data, axis.from, axis.now) : [])
+  const allLanes = $derived(axis ? addressLanes(data, axis.from, axis.now) : [])
+  const rolling = $derived(rollingFamilies(data?.records))
+  const churn = $derived(allLanes.filter((r) => isChurn(r, rolling)))
+  const addresses = $derived(
+    showChurn ? allLanes : allLanes.filter((r) => !isChurn(r, rolling)),
+  )
   const shownAddresses = $derived(
     allAddresses ? addresses : addresses.slice(0, addressCap),
   )
@@ -115,6 +136,13 @@
     if (!n.org || label.endsWith(n.org)) return label
     return `${label}\nprefix held by ${n.org}`
   }
+
+  const logRows = $derived(
+    folded
+      ? collapseChanges(data?.changes ?? [])
+      : (data?.changes ?? []).map((c) => ({ kind: 'one', key: `c${c.id}`, change: c })),
+  )
+  const logFolded = $derived((data?.changes?.length ?? 0) - logRows.length)
 
   function segTitle(what, seg) {
     const to = seg.open ? 'now' : fmtTime(new Date(seg.to).toISOString())
@@ -391,21 +419,48 @@
         </span>
       {/if}
     </div>
-    {#if data.records.length === 0}
+    {#if data.records_total === 0}
       <p class="muted">No addresses have ever been recorded for this name.</p>
-    {:else if addresses.length === 0}
+    {:else if allLanes.length === 0}
       <p class="muted">
         Nothing in the last {days} days. This name has
-        {data.records.length} older address {data.records.length === 1 ? 'record' : 'records'};
+        {data.records_total} older address {data.records_total === 1 ? 'record' : 'records'};
         widen the window above to reach them.
+      </p>
+    {:else if addresses.length === 0}
+      <!-- Every interval in the window is churn inside a prefix. Saying
+           "nothing here" would be wrong, and the toggle has to stay reachable. -->
+      <p class="muted">
+        Every one of the {allLanes.length} intervals in this window is churn inside a prefix
+        this name tracks whole.
+        <button class="link" onclick={() => (showChurn = true)}>Show them anyway</button>
       </p>
     {:else}
       <p class="sub">
-        The same window as the history above. Green is live now.
+        The same window as the history above, live intervals first. Green is live
+        now.
         {#if addresses.length > shownAddresses.length}
           Showing the {addressCap} most recent of {addresses.length}.
         {/if}
+        {#if data.records_total > allLanes.length}
+          {data.records_total - allLanes.length} older
+          {data.records_total - allLanes.length === 1 ? 'interval' : 'intervals'} ended before
+          this window opened and are not fetched; a wider window reaches them.
+        {/if}
       </p>
+      {#if churn.length}
+        <p class="sub">
+          {churn.length} retired
+          {churn.length === 1 ? 'address is' : 'addresses are'} churn inside a prefix this name
+          now tracks whole, so
+          {churn.length === 1 ? 'it is' : 'they are'}
+          {showChurn ? 'shown' : 'left out'} — the same reason the feed does not carry
+          {churn.length === 1 ? 'it' : 'them'}.
+          <button class="link" onclick={() => (showChurn = !showChurn)}>
+            {showChurn ? 'hide the churn' : 'show it anyway'}
+          </button>
+        </p>
+      {/if}
       <div class="lanes">
         {#each shownAddresses as r (r.key)}
           {@const n = data.info?.[r.ip]}
@@ -498,18 +553,64 @@
   </div>
 
   <div class="card">
-    <h2>Change log</h2>
+    <div class="detail-head">
+      <h2>Change log</h2>
+      {#if logFolded > 0 || !folded}
+        <button class="link" onclick={() => (folded = !folded)}>
+          {folded ? `show all ${data.changes.length}` : 'fold repeats'}
+        </button>
+      {/if}
+    </div>
     {#if data.changes.length === 0}
       <p class="muted">No changes recorded.</p>
     {:else}
+      {#if folded && logFolded > 0}
+        <p class="sub">
+          {logRows.length} of {data.changes.length} entries: the same thing changing
+          over and over is one row, opened by its count.
+        </p>
+      {/if}
       <ul class="feed">
-        {#each data.changes as c (c.id)}
-          {@const d = describe(c)}
-          <li>
-            <time datetime={c.observed_at} title={fmtTime(c.observed_at)}>{fmtAgo(c.observed_at)}</time>
-            <span class="sign {d.cls}">{d.sign}</span>
-            <span class="body"><span class="what">{d.text}</span></span>
-          </li>
+        {#each logRows as row (row.key)}
+          {#if row.kind === 'run'}
+            {@const span = fmtSpan(row.earliest, row.latest)}
+            <li>
+              <time datetime={row.latest} title={fmtTime(row.latest)}>{fmtAgo(row.latest)}</time>
+              <span class="sign net">~</span>
+              <span class="body">
+                <span class="what">{row.text}</span>
+                <button
+                  class="link count"
+                  title="{row.count} entries, oldest {fmtTime(row.earliest)}"
+                  onclick={() => toggle(row.key)}
+                >
+                  {opened.has(row.key) ? 'hide' : `${row.count}×`}
+                </button>
+                {#if span}<span class="muted">{span}</span>{/if}
+              </span>
+            </li>
+            {#if opened.has(row.key)}
+              {#each row.members as c (c.id)}
+                {@const d = describe(c)}
+                <li class="folded">
+                  <time datetime={c.observed_at} title={fmtTime(c.observed_at)}>
+                    {fmtAgo(c.observed_at)}
+                  </time>
+                  <span class="sign {d.cls}">{d.sign}</span>
+                  <span class="body"><span class="what">{d.text}</span></span>
+                </li>
+              {/each}
+            {/if}
+          {:else}
+            {@const d = describe(row.change)}
+            <li>
+              <time datetime={row.change.observed_at} title={fmtTime(row.change.observed_at)}>
+                {fmtAgo(row.change.observed_at)}
+              </time>
+              <span class="sign {d.cls}">{d.sign}</span>
+              <span class="body"><span class="what">{d.text}</span></span>
+            </li>
+          {/if}
         {/each}
       </ul>
     {/if}

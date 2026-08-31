@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   classReason, collapseChanges, describeNetwork, fmtAgo, fmtSpan, healthOf,
-  sortTrackers, trackerClass,
+  isChurn, rollingFamilies, sortTrackers, trackerClass,
 } from './api.js'
 
 // The label sits next to "AS13335", so it should name the company that holds
@@ -137,4 +137,33 @@ test('sorting is stable and never ranks an unmeasured name as a bad one', () => 
   assert.deepEqual(sortTrackers(list, 'uptime', 1).map((t) => t.name), ['c', 'd', 'b', 'a'])
   // Equal values keep name order rather than shuffling between renders.
   assert.deepEqual(sortTrackers(list, 'name', 1).map((t) => t.name), ['a', 'b', 'c', 'd'])
+})
+
+// p4p.arenabg.com holds 184 address intervals of which 5 are active: the rest
+// are CDN edges inside a prefix the name is now tracked by. The model says
+// churn inside a prefix is not reported, and the address table was reporting
+// all of it.
+test('churn inside a tracked prefix is told apart from address history', () => {
+  const records = [
+    { id: 1, ip: '2600:9000:2094::/48', family: 6, active: true, is_prefix: true },
+    { id: 2, ip: '65.9.46.42', family: 4, active: true, is_prefix: false },
+    { id: 3, ip: '2600:9000:2094::1', family: 6, active: false, is_prefix: false },
+    { id: 4, ip: '65.9.46.99', family: 4, active: false, is_prefix: false },
+    { id: 5, ip: '2600:9000:2000::/48', family: 6, active: false, is_prefix: true },
+  ]
+  const rolling = rollingFamilies(records)
+  assert.deepEqual([...rolling], [6])
+
+  const churn = records.filter((r) => isChurn(r, rolling))
+  // Only the retired v6 address: the v4 family is not rolling, so its retired
+  // address is history rather than churn, and a retired *prefix* is a move
+  // between prefixes, which is exactly what the feed does report.
+  assert.deepEqual(churn.map((r) => r.id), [3])
+})
+
+test('a name with no prefix record has no churn to hide', () => {
+  const records = [{ id: 1, ip: '1.2.3.4', family: 4, active: false, is_prefix: false }]
+  const rolling = rollingFamilies(records)
+  assert.equal(rolling.size, 0)
+  assert.equal(isChurn(records[0], rolling), false)
 })

@@ -108,6 +108,26 @@ func (s *Store) RecordsFor(ctx context.Context, trackerID int64) ([]IPRecord, er
 		ORDER BY active DESC, first_seen DESC, ip`, trackerID)
 }
 
+// RecordsSince is RecordsFor scoped to a window: the active records and the ones
+// that ended inside it. A rolling name behind a CDN holds 184 records of which 5
+// are active, and sending all of them made its page a 132KB download of history
+// no window on it can draw.
+func (s *Store) RecordsSince(ctx context.Context, trackerID int64, from time.Time) ([]IPRecord, error) {
+	return s.queryRecords(ctx, `
+		SELECT `+recordColumns+`
+		FROM ip_records WHERE tracker_id = ? AND (active = 1 OR last_seen >= ?)
+		ORDER BY active DESC, first_seen DESC, ip`, trackerID, fmtTime(from))
+}
+
+// CountRecords is how many intervals a name holds in total, so a page showing a
+// window can say what it is not showing.
+func (s *Store) CountRecords(ctx context.Context, trackerID int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM ip_records WHERE tracker_id = ?`, trackerID).Scan(&n)
+	return n, err
+}
+
 // FamilyStates returns the churn bookkeeping for a tracker, keyed by family.
 func (s *Store) FamilyStates(ctx context.Context, trackerID int64) (map[int]FamilyState, error) {
 	out := map[int]FamilyState{}

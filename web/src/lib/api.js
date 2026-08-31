@@ -182,6 +182,25 @@ export function addressLanes(data, from, now) {
   return out
 }
 
+/**
+ * The families a name currently tracks by prefix, inferred from its records: an
+ * active prefix record is what rolling means. The detail payload carries no
+ * flag for it, and does not need one.
+ */
+export function rollingFamilies(records) {
+  return new Set((records ?? []).filter((r) => r.active && r.is_prefix).map((r) => r.family))
+}
+
+/**
+ * Whether a record is churn inside a prefix the name now tracks: a retired
+ * address of a rolling family. The model says churn inside a prefix is not
+ * reported, but the address table was still listing every one of it — 179 of
+ * p4p.arenabg.com's 184 intervals are CDN edges nothing will see again.
+ */
+export function isChurn(r, rolling) {
+  return !r.active && !r.is_prefix && rolling.has(r.family)
+}
+
 const DAY = 86_400_000
 
 /**

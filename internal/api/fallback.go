@@ -590,7 +590,7 @@ func (s *Server) trackerSections(ctx context.Context, d *doc, t store.Tracker) e
 	if err != nil {
 		return err
 	}
-	changes, err := s.Store.ChangesFor(ctx, t.ID, fallbackChanges)
+	changes, err := s.Store.ChangesFor(ctx, t.ID, fallbackFeedRead)
 	if err != nil {
 		return err
 	}
@@ -620,10 +620,21 @@ func (s *Server) trackerSections(ctx context.Context, d *doc, t store.Tracker) e
 	if len(changes) == 0 {
 		log.Notes = []string{"Nothing recorded for this name yet."}
 	} else {
+		// Folded, as on the dashboard: a rolling name's log is otherwise 50 rows
+		// of one CDN swapping edge addresses.
+		rows := collapseChanges(changes, minRun)
+		if len(rows) > fallbackChanges {
+			rows = rows[:fallbackChanges]
+		}
+		if len(changes) > len(rows) {
+			log.Notes = append(log.Notes,
+				"The same thing changing over and over is one row, counted. "+
+					"/api/trackers/"+t.Name+" carries every entry unfolded.")
+		}
 		log.Table = &table{Head: []string{"When", "Change"}}
-		for _, c := range changes {
+		for _, r := range rows {
 			log.Table.Rows = append(log.Table.Rows,
-				[]cell{txt(stamp(c.ObservedAt)), txt(describeChange(c))})
+				[]cell{txt(stamp(r.Latest)), txt(r.Text)})
 		}
 	}
 	d.Sections = append(d.Sections, log)

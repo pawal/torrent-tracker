@@ -176,11 +176,14 @@ func (s *Server) handleTrackers(w http.ResponseWriter, r *http.Request) {
 // id, since one address can answer on one endpoint and not another.
 type trackerDetail struct {
 	store.Tracker
-	Records   []store.IPRecord        `json:"records"`
-	Changes   []store.Change          `json:"changes"`
-	Info      map[string]store.IPInfo `json:"info"`
-	Endpoints []store.Endpoint        `json:"endpoints"`
-	Probes    []store.Probe           `json:"probes"`
+	Records []store.IPRecord `json:"records"`
+	// RecordsTotal is every interval on record, against which Records is only
+	// the window: a rolling name holds hundreds the page cannot draw.
+	RecordsTotal int                     `json:"records_total"`
+	Changes      []store.Change          `json:"changes"`
+	Info         map[string]store.IPInfo `json:"info"`
+	Endpoints    []store.Endpoint        `json:"endpoints"`
+	Probes       []store.Probe           `json:"probes"`
 	// History is the closed probe intervals in the window; the open one is the
 	// matching row in Probes, so together they cover the axis.
 	History     []store.ProbeInterval `json:"probe_history"`
@@ -203,7 +206,13 @@ func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	records, err := s.Store.RecordsFor(r.Context(), t.ID)
+	from := time.Now().UTC().AddDate(0, 0, -intParam(r, "days", 30))
+	records, err := s.Store.RecordsSince(r.Context(), t.ID, from)
+	if err != nil {
+		s.serverError(w, err)
+		return
+	}
+	recordsTotal, err := s.Store.CountRecords(r.Context(), t.ID)
 	if err != nil {
 		s.serverError(w, err)
 		return
@@ -228,7 +237,6 @@ func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
 		s.serverError(w, err)
 		return
 	}
-	from := time.Now().UTC().AddDate(0, 0, -intParam(r, "days", 30))
 	history, err := s.Store.ProbeHistoryFor(r.Context(), t.ID, from)
 	if err != nil {
 		s.serverError(w, err)
@@ -240,7 +248,7 @@ func (s *Server) handleTracker(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, trackerDetail{
-		Tracker: t, Records: records, Changes: changes, Info: info,
+		Tracker: t, Records: records, RecordsTotal: recordsTotal, Changes: changes, Info: info,
 		Endpoints: endpoints, Probes: probes,
 		History: history, HistoryFrom: from,
 		Resolution: resolution, ResolutionStats: latency,

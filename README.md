@@ -107,8 +107,11 @@ prefixes enrichment has already recorded for the name's other addresses, so one
 enriched address places every later one in the /48. An address inside no known
 prefix stays an address.
 
-Churn inside a prefix is not reported. A move to another prefix is a
-`prefix_added` and a `prefix_removed`. After `--steady-after` (6) settled runs
+Churn inside a prefix is not reported, on the feed or on the name's own page:
+the addresses retired when a family started rolling are edges nothing will see
+again, and 179 of `p4p.arenabg.com`'s 184 intervals are those. The address
+history leaves them out and says how many, with a button for the curious. A
+move to another prefix is a `prefix_added` and a `prefix_removed`. After `--steady-after` (6) settled runs
 the family returns to per-address tracking; `--roll-after=-1` keeps every
 address. Settling is deliberately slower than rolling, so a borderline name
 cannot oscillate between the two; the switch itself reports only `ips_rolling`
@@ -615,7 +618,7 @@ needs no authentication.
 | --- | --- |
 | `GET /api/stats` | counters and the last run |
 | `GET /api/trackers` | all trackers with their live addresses and uptime (`?all=1` includes removed, `?days=N` sets the uptime window) |
-| `GET /api/trackers/{name}` | one tracker with full address history, change log, per-address network info, per-endpoint probe results, and probe and DNS history for the window (`?days=N`, default 30) |
+| `GET /api/trackers/{name}` | one tracker with its address history for the window, change log, per-address network info, per-endpoint probe results, and probe and DNS history (`?days=N`, default 30) |
 | `GET /api/changes` | the change feed (`?since=RFC3339&limit=N`) |
 | `GET /api/networks` | top ASes, RIR and country breakdown, enrichment coverage, reachability totals, tracker software, shared addresses |
 | `GET /api/list/...` | announce URLs as plain text, see [Lists for clients](#lists-for-clients) |
@@ -700,6 +703,10 @@ before it paints — and puts it back if the bundle fails to load.
 | `/networks` | reachability, software, shared addresses, ASes, RIRs, countries |
 | `/lists` | the stable list's URLs, and the endpoints serving the variants |
 | `/t/{name}` | status, per-address probe verdicts, address intervals, change log |
+
+`records` is scoped to `?days` — the open intervals plus the ones that ended
+inside it — with `records_total` giving what the name holds in all. A rolling
+name behind a CDN holds hundreds no window on the page can draw.
 
 **The present state and the feed, never the windowed history.** A month-wide
 scan a page reads as nothing in text, so uptime and the intervals stay in

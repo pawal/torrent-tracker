@@ -636,6 +636,19 @@ engine, so every tracker page used to be invisible.
 | `/networks` | AS, RIR, country and software breakdowns |
 | `/t/{name}` | one tracker's history |
 
+The tracker list is in two tables. **Known trackers** carries the names that
+are trackers, sortable by name, whether they answer, uptime, DNS status or last
+check, and filtered by health: *answering*, *flapping*, *never answered*, *went
+quiet*, *not probed*. **Not trackers** below it carries the parked, denying and
+retired names, each saying which it is.
+
+Uptime is a column there rather than only on a tracker's own page, over a
+window of 7, 30 or 90 days. It is the number the announce lists filter on, and
+it is bimodal — of 249 measured names, 82 sit at 100% and 134 at 0% — so the
+column is mostly a way of finding the 33 in between. The failed attempts an
+interval survived ride beside it as `3✗`: 52 of the 105 answering names carry
+some, and a round 100% with misses is a name that flaps.
+
 The server knows the same route table, so it answers an unknown path or an
 unknown name with a 404 and `noindex` rather than the shell and a 200.
 `/trackers/` redirects to `/trackers`.
@@ -677,7 +690,7 @@ before it paints — and puts it back if the bundle fails to load.
 | Page | Rendered |
 | --- | --- |
 | `/` | the counters, the resolution rollup and the last 50 feed rows |
-| `/trackers` | every name with its DNS status, whether it answers and its ASes |
+| `/trackers` | trackers, then the names that are not, with DNS status and ASes |
 | `/networks` | reachability, software, shared addresses, ASes, RIRs, countries |
 | `/t/{name}` | status, per-address probe verdicts, address intervals, change log |
 

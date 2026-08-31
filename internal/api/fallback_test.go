@@ -419,3 +419,71 @@ func TestChurnTextCoversEveryGroup(t *testing.T) {
 		}
 	}
 }
+
+// The list is split, so a parked or retired name must not appear among the
+// trackers — and must still appear, since a reader looking for a name that
+// used to be on the list needs to find it somewhere.
+func TestTrackerListSeparatesWhatIsNotATracker(t *testing.T) {
+	h, st := testServer(t)
+	ctx := t.Context()
+	seed(t, st)
+
+	add := func(name string) store.Tracker {
+		tr, _, err := st.AddTracker(ctx, name, "list.txt", time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tr
+	}
+	parked := add("parked.example.com")
+	if _, err := st.SetParked(ctx, parked.ID, true, "parked", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	retired := add("retired.example.com")
+	if err := st.RemoveTracker(ctx, retired.Name, false); err != nil {
+		t.Fatal(err)
+	}
+
+	body := getAs(t, h, "/trackers", "*/*").Body.String()
+	trackers, other, found := strings.Cut(body, "Not trackers")
+	if !found {
+		t.Fatalf("no second section in:\n%s", body)
+	}
+	for _, name := range []string{"parked.example.com", "retired.example.com"} {
+		if strings.Contains(trackers, name) {
+			t.Errorf("%s is listed among the trackers", name)
+		}
+		if !strings.Contains(other, name) {
+			t.Errorf("%s is listed nowhere", name)
+		}
+	}
+	if !strings.Contains(other, "resolves only to parking addresses") {
+		t.Error("the parked name does not say why it is there")
+	}
+	if !strings.Contains(other, "collection stopped") {
+		t.Error("the retired name does not say why it is there")
+	}
+}
+
+func TestTrackerClassRanksRetiredFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   store.Tracker
+		want string
+	}{
+		{"a tracker", store.Tracker{Enabled: true}, "tracker"},
+		{"parked", store.Tracker{Enabled: true, Parked: true}, "parked"},
+		{"denies", store.Tracker{Enabled: true, BEP34Denies: true}, "denies"},
+		{"retired", store.Tracker{}, "retired"},
+		// Collection has stopped either way, and that is the fact that explains
+		// why nothing about the name is moving.
+		{"retired and parked", store.Tracker{Parked: true}, "retired"},
+	} {
+		if got := trackerClass(tc.in); got != tc.want {
+			t.Errorf("%s: trackerClass = %q, want %q", tc.name, got, tc.want)
+		}
+		if trackerClass(tc.in) != "tracker" && classReason(tc.in) == "" {
+			t.Errorf("%s: no reason given", tc.name)
+		}
+	}
+}

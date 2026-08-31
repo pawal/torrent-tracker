@@ -15,7 +15,8 @@ async function get(path) {
 }
 
 export const getStats = () => get('/api/stats')
-export const getTrackers = () => get('/api/trackers')
+export const getTrackers = (days = 30, all = false) =>
+  get(`/api/trackers?days=${days}${all ? '&all=1' : ''}`)
 export const getTracker = (name, days = 30) =>
   get(`/api/trackers/${encodeURIComponent(name)}?days=${days}`)
 export const getChanges = (limit = 200, sinceDays = 0) => {
@@ -273,6 +274,85 @@ export function describeEvidence(kind) {
 export function softwareTitle(s) {
   if (!s?.variants?.length) return s?.signature ?? ''
   return `${s.signature}\n\ngrouped from:\n${s.variants.join('\n')}`
+}
+
+// What a name is, when it is on the registry without being a tracker. Half the
+// list is names that stopped being trackers years ago, and mixing them with the
+// live ones is what made the page a graveyard to read. Mirrors trackerClass in
+// internal/api/fallback.go.
+export function trackerClass(t) {
+  if (t.enabled === false) return 'retired'
+  if (t.bep34_denies) return 'denies'
+  if (t.parked) return 'parked'
+  return 'tracker'
+}
+
+const classReasons = {
+  parked: 'resolves only to parking addresses',
+  denies: 'publishes a BEP 34 record naming no tracker',
+  retired: 'collection stopped; the history stays',
+}
+
+/** Why a name is under "Not trackers". Mirrors classReason in fallback.go. */
+export function classReason(t) {
+  return classReasons[trackerClass(t)] ?? ''
+}
+
+/**
+ * Which health bucket a tracker is in, for the filter chips. Flapping is the
+ * band worth finding: uptime is bimodal — 82 names at 100%, 134 at 0%, 33 in
+ * between — and the 33 are the ones a number tells you something about. An
+ * answering name with failed attempts behind it flaps too, however round its
+ * uptime reads.
+ */
+export function healthOf(t) {
+  const answering = t.state?.answering ?? false
+  if (answering) {
+    const flaky = (t.uptime !== null && t.uptime !== undefined && t.uptime < 0.99) || t.misses > 0
+    return flaky ? 'flapping' : 'answering'
+  }
+  if (t.state && !t.last_live_at) return 'never'
+  if (t.last_live_at) return 'quiet'
+  return 'unprobed'
+}
+
+export const healthLabels = {
+  answering: 'answering',
+  flapping: 'flapping',
+  never: 'never answered',
+  quiet: 'went quiet',
+  unprobed: 'not probed',
+}
+
+// How a column sorts. Every key falls back to the name, so a column of equal
+// values keeps one order rather than shuffling between renders.
+const sortKeys = {
+  name: (t) => t.name,
+  health: (t) => ['answering', 'flapping', 'quiet', 'never', 'unprobed'].indexOf(healthOf(t)),
+  // Null uptime is not zero: nothing was measured. It sorts after everything
+  // measured, in either direction, because it is not a worse number but no
+  // number. -1 would rank it below 0% descending and above it ascending.
+  uptime: (t) => (t.uptime === null || t.uptime === undefined ? null : t.uptime),
+  dns: (t) => t.last_status ?? '',
+  checked: (t) => t.last_checked_at ?? '',
+}
+
+/** Sort a tracker list by one column. Returns a new array. */
+export function sortTrackers(list, key = 'health', dir = 1) {
+  const pick = sortKeys[key] ?? sortKeys.name
+  const out = [...list]
+  out.sort((a, b) => {
+    const x = pick(a)
+    const y = pick(b)
+    if (x === null && y === null) return a.name.localeCompare(b.name)
+    if (x === null) return 1
+    if (y === null) return -1
+    let d = 0
+    if (typeof x === 'number') d = x - y
+    else d = String(x).localeCompare(String(y))
+    return d * dir || a.name.localeCompare(b.name)
+  })
+  return out
 }
 
 /** Served from a country: one active address is enough, as the rollup counts it. */

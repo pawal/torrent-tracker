@@ -1,7 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { collapseChanges, describeNetwork, fmtAgo, fmtSpan } from './api.js'
+import {
+  classReason, collapseChanges, describeNetwork, fmtAgo, fmtSpan, healthOf,
+  sortTrackers, trackerClass,
+} from './api.js'
 
 // The label sits next to "AS13335", so it should name the company that holds
 // the AS. RDAP's org is as often the maintainer handle: AS24940 comes back as
@@ -91,4 +94,47 @@ test('a span reads in the largest unit that fits, and not at all under an hour',
   assert.equal(fmtSpan('2026-08-25T12:00:00Z', '2026-08-31T12:00:00Z'), 'over 6d')
   assert.equal(fmtSpan('2026-08-31T04:00:00Z', '2026-08-31T12:00:00Z'), 'over 8h')
   assert.equal(fmtSpan('2026-08-31T11:30:00Z', '2026-08-31T12:00:00Z'), '')
+})
+
+// Half the registry stopped being trackers years ago. Reading them mixed in
+// with the live ones is what made the list a graveyard, so they get their own
+// section and the classification decides which one a name lands in.
+test('a name on the registry is classified before it is listed', () => {
+  assert.equal(trackerClass({ name: 'a', enabled: true }), 'tracker')
+  assert.equal(trackerClass({ name: 'a', enabled: true, parked: true }), 'parked')
+  assert.equal(trackerClass({ name: 'a', enabled: true, bep34_denies: true }), 'denies')
+  assert.equal(trackerClass({ name: 'a', enabled: false }), 'retired')
+  // Retired wins over parked: collection has stopped either way, and that is
+  // the fact that explains why nothing about it is moving.
+  assert.equal(trackerClass({ name: 'a', enabled: false, parked: true }), 'retired')
+  assert.match(classReason({ enabled: true, parked: true }), /parking addresses/)
+  assert.equal(classReason({ enabled: true }), '')
+})
+
+// The uptime column is bimodal — 82 names at 100%, 134 at 0%, 33 in between —
+// so the band worth a chip is the middle one. An answering name with failed
+// attempts behind it belongs there too, however round its uptime reads.
+test('health buckets separate flapping from answering', () => {
+  const answering = { state: { answering: true }, uptime: 1, misses: 0 }
+  assert.equal(healthOf(answering), 'answering')
+  assert.equal(healthOf({ ...answering, uptime: 0.64 }), 'flapping')
+  assert.equal(healthOf({ ...answering, misses: 3 }), 'flapping')
+  assert.equal(healthOf({ state: { answering: false }, last_live_at: null }), 'never')
+  assert.equal(healthOf({ state: { answering: false }, last_live_at: '2026-08-01T00:00:00Z' }), 'quiet')
+  assert.equal(healthOf({}), 'unprobed')
+})
+
+test('sorting is stable and never ranks an unmeasured name as a bad one', () => {
+  const list = [
+    { name: 'c', uptime: 0.5 },
+    { name: 'a', uptime: null },
+    { name: 'b', uptime: 1 },
+    { name: 'd', uptime: 0.5 },
+  ]
+  // Nothing measured is no number, not a low one, so it sorts last whichever
+  // way the column points.
+  assert.deepEqual(sortTrackers(list, 'uptime', -1).map((t) => t.name), ['b', 'c', 'd', 'a'])
+  assert.deepEqual(sortTrackers(list, 'uptime', 1).map((t) => t.name), ['c', 'd', 'b', 'a'])
+  // Equal values keep name order rather than shuffling between renders.
+  assert.deepEqual(sortTrackers(list, 'name', 1).map((t) => t.name), ['a', 'b', 'c', 'd'])
 })

@@ -275,30 +275,49 @@ func collapseChanges(changes []store.Change, minRun int) []feedRow {
 
 // trackerListSections mirrors Trackers.svelte, minus the addresses and the
 // uptime. Both are on the tracker's own page, and uptime costs the scan above.
+// The split into trackers and everything else is the same one, though: half the
+// registry is names that stopped being trackers, and reading them mixed in is
+// what made the list a graveyard.
 func (s *Server) trackerListSections(ctx context.Context, d *doc, country string) error {
-	views, err := s.Store.ListTrackerViews(ctx, false)
+	views, err := s.Store.ListTrackerViews(ctx, true)
 	if err != nil {
 		return err
 	}
 
-	sec := section{Table: &table{Head: []string{"Tracker", "DNS", "Answers", "Network"}}}
+	sec := section{Table: &table{Head: []string{"Tracker", "Answers", "DNS", "Network"}}}
+	other := section{Heading: "Not trackers",
+		Notes: []string{"On the registry without being a tracker, so they are left out of the " +
+			"list above and of the rollups on /networks. Their history stays."},
+		Table: &table{Head: []string{"Name", "Why", "DNS", "Network"}}}
+
+	var scoped int
 	for _, v := range views {
 		if country != "" && !servedFrom(v, country) {
 			continue
 		}
+		scoped++
+		if class := trackerClass(v.Tracker); class != "tracker" {
+			other.Table.Rows = append(other.Table.Rows, []cell{
+				link(v.Name, trackerHref(v.Name)),
+				txt(class + " — " + classReason(v.Tracker)),
+				txt(string(cmp.Or(v.LastStatus, "unchecked"))),
+				txt(networksLabel(v.Networks)),
+			})
+			continue
+		}
 		sec.Table.Rows = append(sec.Table.Rows, []cell{
 			link(v.Name, trackerHref(v.Name)),
-			txt(dnsLabel(v.Tracker)),
 			txt(answersLabel(v.Tracker)),
+			txt(dnsLabel(v.Tracker)),
 			txt(networksLabel(v.Networks)),
 		})
 	}
 
 	n := len(sec.Table.Rows)
 	if country != "" {
-		sec.Notes = append(sec.Notes, fmt.Sprintf("%d of %d tracked names.", n, len(views)))
+		sec.Notes = append(sec.Notes, fmt.Sprintf("%d trackers of %d names in %s.", n, scoped, country))
 	} else {
-		sec.Notes = append(sec.Notes, fmt.Sprintf("%d tracked names.", n))
+		sec.Notes = append(sec.Notes, fmt.Sprintf("%d trackers of %d names on record.", n, scoped))
 	}
 	sec.Notes = append(sec.Notes, "Addresses, endpoints and uptime are on each tracker's own page, "+
 		"and the AS holders on /networks; /api/trackers carries the lot at once.")
@@ -306,7 +325,38 @@ func (s *Server) trackerListSections(ctx context.Context, d *doc, country string
 		sec.Table = nil
 	}
 	d.Sections = append(d.Sections, sec)
+	if len(other.Table.Rows) > 0 {
+		d.Sections = append(d.Sections, other)
+	}
 	return nil
+}
+
+// trackerClass is what a name is when it is on the registry without being a
+// tracker. Mirrors trackerClass in web/src/lib/api.js.
+func trackerClass(t store.Tracker) string {
+	switch {
+	case !t.Enabled:
+		return "retired"
+	case t.BEP34Denies:
+		return "denies"
+	case t.Parked:
+		return "parked"
+	}
+	return "tracker"
+}
+
+// classReason is why a name is not a tracker. Mirrors classReason in
+// web/src/lib/api.js.
+func classReason(t store.Tracker) string {
+	switch trackerClass(t) {
+	case "retired":
+		return "collection stopped; the history stays"
+	case "denies":
+		return "publishes a BEP 34 record naming no tracker"
+	case "parked":
+		return "resolves only to parking addresses"
+	}
+	return ""
 }
 
 // networkSections mirrors Networks.svelte.
@@ -621,7 +671,9 @@ func addressNetwork(i store.IPInfo) string {
 }
 
 // dnsLabel is the resolver's verdict and nothing else, plus the two facts that
-// say a name is not a tracker however well it resolves.
+// say a name is not a tracker however well it resolves. On the list those two
+// put a name under "Not trackers" instead; a detail page has no second section
+// to move it to, so it still says them here.
 func dnsLabel(t store.Tracker) string {
 	out := cmp.Or(string(t.LastStatus), "unchecked")
 	if t.Parked {

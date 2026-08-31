@@ -814,6 +814,52 @@ button.link {
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* A sortable header is a button that has to look like the header it replaced. */
+button.sort {
+  font: inherit;
+  color: inherit;
+  font-weight: inherit;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button.sort:hover {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+/* Filter chips: a pill that can be pressed, so it needs a resting outline the
+   pills beside it do not. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+button.chip {
+  border: 1px solid transparent;
+  cursor: pointer;
+  opacity: 0.65;
+}
+button.chip.on {
+  opacity: 1;
+  border-color: currentcolor;
+}
+button.pill.chip:not(.live):not(.partial):not(.dead) {
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+
+/* Failed attempts an interval survived, beside the uptime they do not show in.
+   Half the answering names carry some, so it has to be quiet. */
+.misses {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  margin-left: 4px;
+}
 .legend + .legend {
   margin-top: var(--space-1);
 }

@@ -10,7 +10,8 @@ versioning](https://semver.org/).
 - SQLite 3.53.4, through `modernc.org/sqlite` v1.60.1.
 - `maxminddb-golang` v2.8.0, for the optional `--geoip-db`.
 - `codeberg.org/miekg/dns` v0.6.118, which every lookup goes through.
-- Svelte 5.57.2 and Vite 7.3.7.
+- Svelte 5.57.2, and Vite 8 with `vite-plugin-svelte` 7: the bundle is built
+  by Rolldown and the shell's inline style is minified.
 - CI on `actions/checkout`, `setup-go` and `setup-node` v7.
 
 ### Fixed

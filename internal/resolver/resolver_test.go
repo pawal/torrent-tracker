@@ -24,6 +24,21 @@ func TestRRType(t *testing.T) {
 	if TypeA.dnsType() != dns.TypeA || TypeAAAA.dnsType() != dns.TypeAAAA {
 		t.Error("qtypes are wrong")
 	}
+	// TXT carries no addresses, so it has no family to store them under.
+	if TypeTXT.Family() != 0 || TypeTXT.String() != "TXT" || TypeTXT.dnsType() != dns.TypeTXT {
+		t.Error("TXT is wrong")
+	}
+}
+
+// An rcode with no registered name still has to say which one it was, or the
+// stored failure reads as an unexplained error.
+func TestRcodeNameUnknown(t *testing.T) {
+	if got := rcodeName(3841); got != "RCODE3841" {
+		t.Errorf("rcodeName(3841) = %q, want RCODE3841", got)
+	}
+	if got := rcodeName(dns.RcodeServerFailure); got != "SERVFAIL" {
+		t.Errorf("rcodeName(SERVFAIL) = %q", got)
+	}
 }
 
 func TestNewNormalisesServers(t *testing.T) {
@@ -250,6 +265,13 @@ func (z testZone) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg
 			m.Answer = []dns.RR{mustRR(z.t, "v4only.example.com. 60 IN A 192.0.2.20")}
 		}
 		// AAAA falls through to NOERROR/NODATA.
+	case "origin.example.com.":
+		if qtype == dns.TypeTXT {
+			m.Answer = []dns.RR{
+				mustRR(z.t, `origin.example.com. 300 IN TXT "13335 | 104.16.0.0/13 | US | arin | 2014-03-28"`),
+				mustRR(z.t, `origin.example.com. 60 IN TXT "split " "across " "strings"`),
+			}
+		}
 	case "gone.example.com.":
 		m.Rcode = dns.RcodeNameError
 	case "broken.example.com.":
@@ -320,6 +342,112 @@ func TestLookupAgainstLiveServer(t *testing.T) {
 				t.Errorf("addrs = %v, want [%s]", got.Addrs, tt.wantAddr)
 			}
 		})
+	}
+}
+
+// Team Cymru publishes IP-to-ASN data as TXT, so this is the path every ASN
+// lookup takes. A record's character-strings are one value split for the wire
+// (each string is capped at 255 bytes), and must come back joined; separate
+// records stay separate, in answer order, and the TTL is the shortest.
+func TestLookupTXT(t *testing.T) {
+	d := newTestResolver(t)
+	got := d.Lookup(context.Background(), "origin.example.com", TypeTXT)
+	if got.Status != store.StatusOK {
+		t.Fatalf("status = %q (err %q), want ok", got.Status, got.Err)
+	}
+	want := []string{"13335 | 104.16.0.0/13 | US | arin | 2014-03-28", "split across strings"}
+	if len(got.TXT) != len(want) || got.TXT[0] != want[0] || got.TXT[1] != want[1] {
+		t.Errorf("TXT = %q, want %q", got.TXT, want)
+	}
+	if len(got.Addrs) != 0 {
+		t.Errorf("addrs = %v, want none from a TXT query", got.Addrs)
+	}
+	if got.TTL != 60 {
+		t.Errorf("TTL = %d, want 60", got.TTL)
+	}
+
+	// A name with addresses but no TXT is nodata, not ok.
+	if got := d.Lookup(context.Background(), "dual.example.com", TypeTXT); got.Status != store.StatusNoData {
+		t.Errorf("TXT for an address-only name: status = %q, want nodata", got.Status)
+	}
+}
+
+// --- truncation ------------------------------------------------------------
+
+// truncatingZone answers over UDP with the first address and the TC bit set,
+// the way a resolver does when the full set will not fit in the datagram, and
+// with every address over TCP.
+type truncatingZone struct{ t *testing.T }
+
+var bigAddrs = []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}
+
+func (z truncatingZone) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
+	m := new(dns.Msg)
+	m.ID = r.ID
+	m.Response = true
+	m.Question = r.Question
+	for _, a := range bigAddrs {
+		m.Answer = append(m.Answer, mustRR(z.t, "big.example.com. 300 IN A "+a))
+	}
+	if _, tcp := w.RemoteAddr().(*net.TCPAddr); !tcp {
+		m.Answer = m.Answer[:1]
+		m.Truncated = true
+	}
+	if _, err := m.WriteTo(w); err != nil {
+		z.t.Errorf("write reply: %v", err)
+	}
+}
+
+// truncatingServer starts truncatingZone over UDP, and over TCP on the same
+// port when withTCP is set, and returns the address both share.
+func truncatingServer(t *testing.T, withTCP bool) string {
+	t.Helper()
+	handler := func(s *dns.Server) { s.Handler = truncatingZone{t: t} }
+	cancel, addr, err := dnstest.UDPServer("127.0.0.1:0", handler)
+	if err != nil {
+		t.Fatalf("start UDP server: %v", err)
+	}
+	t.Cleanup(cancel)
+	if withTCP {
+		// The UDP port is almost always free for TCP too; if not, this fails
+		// loudly rather than testing the UDP-only path by accident.
+		cancel, _, err := dnstest.TCPServer(addr, handler)
+		if err != nil {
+			t.Fatalf("start TCP server on %s: %v", addr, err)
+		}
+		t.Cleanup(cancel)
+	}
+	return addr
+}
+
+func TestLookupRetriesTruncatedAnswerOverTCP(t *testing.T) {
+	d, err := New([]string{truncatingServer(t, true)}, 3*time.Second, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.Lookup(context.Background(), "big.example.com", TypeA)
+	if got.Status != store.StatusOK {
+		t.Fatalf("status = %q (err %q), want ok", got.Status, got.Err)
+	}
+	if len(got.Addrs) != len(bigAddrs) {
+		t.Errorf("addrs = %v, want all of %v from the TCP answer", got.Addrs, bigAddrs)
+	}
+}
+
+// Part of the set beats none: a truncated answer is still the server's word on
+// the name, so with TCP unreachable the UDP addresses are kept rather than the
+// lookup being failed.
+func TestLookupKeepsTruncatedAnswerWhenTCPFails(t *testing.T) {
+	d, err := New([]string{truncatingServer(t, false)}, time.Second, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := d.Lookup(context.Background(), "big.example.com", TypeA)
+	if got.Status != store.StatusOK {
+		t.Fatalf("status = %q (err %q), want ok", got.Status, got.Err)
+	}
+	if len(got.Addrs) != 1 || got.Addrs[0] != bigAddrs[0] {
+		t.Errorf("addrs = %v, want the one UDP address", got.Addrs)
 	}
 }
 

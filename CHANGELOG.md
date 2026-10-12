@@ -5,6 +5,10 @@ versioning](https://semver.org/).
 
 ## Unreleased
 
+### Changed
+
+- SQLite 3.53.4, through `modernc.org/sqlite` v1.60.1.
+
 ### Fixed
 
 - Foreign keys are enforced on every database connection, not only the first.

@@ -5,7 +5,7 @@ go 1.27.2
 require (
 	codeberg.org/miekg/dns v0.6.90
 	github.com/oschwald/maxminddb-golang/v2 v2.5.0
-	modernc.org/sqlite v1.56.0
+	modernc.org/sqlite v1.60.1
 )
 
 require (
@@ -17,7 +17,7 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	modernc.org/libc v1.74.4 // indirect
+	modernc.org/libc v1.77.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )

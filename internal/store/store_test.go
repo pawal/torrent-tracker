@@ -74,6 +74,60 @@ func TestEveryConnectionIsConfigured(t *testing.T) {
 	}
 }
 
+// The CLI and a running daemon open the same file as separate handles, each
+// with its own pool. Their writers queue on SQLite's file lock rather than
+// sharing a Go mutex, so it is WAL and busy_timeout that keep one from failing
+// with SQLITE_BUSY while the other holds the lock.
+func TestTwoHandlesShareOneFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shared.db")
+	daemon, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer daemon.Close()
+	cli, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cli.Close()
+
+	const perHandle = 20
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	for h, s := range []*Store{daemon, cli} {
+		for i := range perHandle {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				name := fmt.Sprintf("h%d-%d.example.com", h, i)
+				if _, _, err := s.AddTracker(t.Context(), name, "test", base); err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		t.Fatalf("%d/%d writes failed, first: %v", len(errs), 2*perHandle, errs[0])
+	}
+
+	// Each handle sees the other's writes once they commit.
+	for h, s := range []*Store{daemon, cli} {
+		got, err := s.ListTrackers(t.Context(), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2*perHandle {
+			t.Errorf("handle %d sees %d trackers, want %d", h, len(got), 2*perHandle)
+		}
+	}
+}
+
 func TestInMemoryStoresAreIsolated(t *testing.T) {
 	a, err := Open(":memory:")
 	if err != nil {

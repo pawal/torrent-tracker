@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"image/png"
 	"io/fs"
+	"regexp"
 	"testing"
 )
 
@@ -110,6 +111,8 @@ func contains(xs []int, want int) bool {
 // halves live in index.html, where a careless edit or a Vite upgrade that
 // starts stripping inline tags would drop them silently: the app would look
 // fine and lynx would see two copies of every page.
+var hideFallback = regexp.MustCompile(`\.js\s+#fallback\s*\{[^}]*display:\s*none`)
+
 func TestShellHidesTheRenderedBodyOnceMounted(t *testing.T) {
 	dist, err := Dist()
 	if err != nil {
@@ -121,8 +124,13 @@ func TestShellHidesTheRenderedBodyOnceMounted(t *testing.T) {
 	}
 
 	shell := string(b)
+	// Vite 8 minifies the inline style, so the rule is matched however it is
+	// spaced rather than as the source writes it.
+	if !hideFallback.MatchString(shell) {
+		t.Errorf("index.html does not hide #fallback under .js:\n%s", shell)
+	}
 	markers := []string{
-		"classList.add('js')", ".js #fallback", "display: none", `<div id="app">`,
+		"classList.add('js')", `<div id="app">`,
 		// Without the listener a bundle that 404s leaves the empty div and no
 		// page at all, which is the case the rendered body exists to cover.
 		"classList.remove('js')", "'error'",

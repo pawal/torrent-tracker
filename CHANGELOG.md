@@ -3,12 +3,18 @@
 Notable changes per release. Versions follow [semantic
 versioning](https://semver.org/).
 
-## Unreleased
+## 1.2.2 — 2026-10-12
+
+`make test` failed on Node 20, the version Debian 13 ships.
 
 ### Fixed
 
 - `make test` runs the frontend tests on Node 20. The script handed `node
   --test` a glob, which Node expands only from 21 on.
+
+### Upgrading
+
+Nothing to change in the unit or the proxy.
 
 ## 1.2.1 — 2026-10-12
 

@@ -3,6 +3,13 @@
 Notable changes per release. Versions follow [semantic
 versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- `make test` runs the frontend tests on Node 20. The script handed `node
+  --test` a glob, which Node expands only from 21 on.
+
 ## 1.2.1 — 2026-10-12
 
 Ten standard-library advisories reached the daemon through Go 1.26.6. This

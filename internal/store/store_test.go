@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -32,6 +33,44 @@ func TestOpenIsIdempotent(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "a.example.com" {
 		t.Errorf("after reopen got %v, want the original tracker", got)
+	}
+}
+
+// SQLite scopes these pragmas to one connection, and database/sql opens more
+// as goroutines need them. A pragma set once with Exec lands only on whichever
+// connection ran it: foreign keys used to be on for the first connection
+// alone, so a purge that ran on any other left the tracker's rows behind
+// instead of cascading. The DSN applies them to every connection it opens.
+func TestEveryConnectionIsConfigured(t *testing.T) {
+	s := testStore(t)
+	ctx := t.Context()
+
+	// Held at once, so the pool cannot hand the same connection back.
+	conns := make([]*sql.Conn, 3)
+	for i := range conns {
+		c, err := s.DB().Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		conns[i] = c
+	}
+
+	for i, c := range conns {
+		var foreignKeys, busyTimeout int
+		var journal string
+		must(t, c.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys))
+		must(t, c.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyTimeout))
+		must(t, c.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journal))
+		if foreignKeys != 1 {
+			t.Errorf("conn %d: foreign_keys = %d, want 1", i, foreignKeys)
+		}
+		if busyTimeout != 10000 {
+			t.Errorf("conn %d: busy_timeout = %d, want 10000", i, busyTimeout)
+		}
+		if journal != "wal" {
+			t.Errorf("conn %d: journal_mode = %q, want wal", i, journal)
+		}
 	}
 }
 

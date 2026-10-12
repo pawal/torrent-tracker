@@ -176,7 +176,8 @@ var memCounter atomic.Uint64
 func Open(path string) (*Store, error) {
 	// _txlock=immediate: lock upgrades fail with SQLITE_BUSY without waiting,
 	// so writers must take the write lock upfront for busy_timeout to apply.
-	const opts = "_pragma=busy_timeout(10000)&_txlock=immediate"
+	// Pragmas go in the DSN so every pooled connection gets them.
+	const opts = "_pragma=busy_timeout(10000)&_pragma=foreign_keys(1)&_txlock=immediate"
 
 	var dsn string
 	if path == ":memory:" {
@@ -193,10 +194,6 @@ func Open(path string) (*Store, error) {
 	if path == ":memory:" {
 		// All goroutines must share the one in-memory database.
 		db.SetMaxOpenConns(1)
-	}
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {

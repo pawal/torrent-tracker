@@ -5,6 +5,11 @@ versioning](https://semver.org/).
 
 ## Unreleased
 
+### Fixed
+
+- Foreign keys are enforced on every database connection, not only the first.
+  A daemon write on any other could leave rows behind for a purged tracker.
+
 ### Security
 
 - Built with Go 1.27.2, past ten standard-library advisories trackerd could

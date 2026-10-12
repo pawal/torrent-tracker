@@ -3,7 +3,7 @@ module github.com/pawal/torrent-tracker
 go 1.27.2
 
 require (
-	codeberg.org/miekg/dns v0.6.90
+	codeberg.org/miekg/dns v0.6.118
 	github.com/oschwald/maxminddb-golang/v2 v2.8.0
 	modernc.org/sqlite v1.60.1
 )

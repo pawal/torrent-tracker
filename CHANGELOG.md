@@ -3,6 +3,17 @@
 Notable changes per release. Versions follow [semantic
 versioning](https://semver.org/).
 
+## Unreleased
+
+### Security
+
+- Built with Go 1.26.9, past ten standard-library advisories trackerd could
+  reach, in `net/http`, `crypto/tls` and `mime/multipart`.
+- `golang.org/x/net` v0.60.0 and `golang.org/x/crypto` v0.57.0, past HTTP/2 and
+  SSH advisories trackerd does not reach.
+- `devalue` 5.9.4 and `source-map-js` 1.2.2 in the frontend build, past
+  denial-of-service advisories. Neither ends up in the bundle.
+
 ## 1.2.0 — 2026-08-31
 
 A week of the feed was 820 entries from 60 names, two thirds of it eight names

@@ -7,12 +7,16 @@ versioning](https://semver.org/).
 
 ### Security
 
-- Built with Go 1.26.9, past ten standard-library advisories trackerd could
+- Built with Go 1.27.2, past ten standard-library advisories trackerd could
   reach, in `net/http`, `crypto/tls` and `mime/multipart`.
 - `golang.org/x/net` v0.60.0 and `golang.org/x/crypto` v0.57.0, past HTTP/2 and
   SSH advisories trackerd does not reach.
 - `devalue` 5.9.4 and `source-map-js` 1.2.2 in the frontend build, past
   denial-of-service advisories. Neither ends up in the bundle.
+
+### Upgrading
+
+Building from source needs Go 1.27.
 
 ## 1.2.0 — 2026-08-31
 

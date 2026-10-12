@@ -9,6 +9,7 @@ versioning](https://semver.org/).
 
 - SQLite 3.53.4, through `modernc.org/sqlite` v1.60.1.
 - `maxminddb-golang` v2.8.0, for the optional `--geoip-db`.
+- Svelte 5.57.2 and Vite 7.3.7.
 
 ### Fixed
 

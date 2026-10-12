@@ -3,7 +3,11 @@
 Notable changes per release. Versions follow [semantic
 versioning](https://semver.org/).
 
-## Unreleased
+## 1.2.1 — 2026-10-12
+
+Ten standard-library advisories reached the daemon through Go 1.26.6. This
+release builds with Go 1.27, brings the dependencies current, and enforces
+foreign keys on every database connection.
 
 ### Changed
 
@@ -30,7 +34,8 @@ versioning](https://semver.org/).
 
 ### Upgrading
 
-Building from source needs Go 1.27.
+Nothing to change in the unit or the proxy. Building from source needs Go
+1.27.
 
 ## 1.2.0 — 2026-08-31
 

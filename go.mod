@@ -1,6 +1,6 @@
 module github.com/pawal/torrent-tracker
 
-go 1.27.2
+go 1.27.4
 
 require (
 	codeberg.org/miekg/dns v0.6.118

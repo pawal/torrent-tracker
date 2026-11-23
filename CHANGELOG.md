@@ -3,6 +3,19 @@
 Notable changes per release. Versions follow [semantic
 versioning](https://semver.org/).
 
+## Unreleased
+
+### Security
+
+- Built with Go 1.27.4, past two standard-library advisories: compromised
+  intermediate certificates in `crypto/x509` (GO-2026-6809), which every
+  HTTPS fetch and probe verifies against, and a `MaxBytesReader` header race
+  in `net/http` (GO-2026-6859), which trackerd does not use.
+
+### Upgrading
+
+Building from source needs Go 1.27.4.
+
 ## 1.2.2 — 2026-10-12
 
 `make test` failed on Node 20, the version Debian 13 ships.

@@ -3,7 +3,10 @@
 Notable changes per release. Versions follow [semantic
 versioning](https://semver.org/).
 
-## Unreleased
+## 1.2.3 — 2026-11-23
+
+Two standard-library advisories published since 1.2.2 cover Go 1.27.2, which
+it was built with.
 
 ### Security
 
@@ -14,7 +17,8 @@ versioning](https://semver.org/).
 
 ### Upgrading
 
-Building from source needs Go 1.27.4.
+Nothing to change in the unit or the proxy. Building from source needs Go
+1.27.4.
 
 ## 1.2.2 — 2026-10-12
 
